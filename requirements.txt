@@ -1,0 +1,3 @@
+telethon
+deep-translator
+python-dotenv  # если нужно, но здесь не обязательно
