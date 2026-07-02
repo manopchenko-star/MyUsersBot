@@ -17,7 +17,11 @@ PORT = int(os.environ.get("PORT", 10000))
 client1 = TelegramClient(StringSession(SESSION_STRING_1), API_ID, API_HASH)
 client2 = None
 if SESSION_STRING_2:
-    client2 = TelegramClient(StringSession(SESSION_STRING_2), API_ID, API_HASH)
+    try:
+        client2 = TelegramClient(StringSession(SESSION_STRING_2), API_ID, API_HASH)
+    except Exception as e:
+        print(f"⚠️ Ошибка создания второго клиента: {e}. Бот продолжит работу с одним аккаунтом.")
+        client2 = None
 
 # ========== ОБЩИЕ ДАННЫЕ ==========
 muted_chats = set()
@@ -30,9 +34,14 @@ async def init_protected_users():
     """Добавляем владельцев аккаунтов в защищённый список."""
     me1 = await client1.get_me()
     protected_users.add(me1.id)
+    print(f"🛡 Владелец 1: {me1.id}")
     if client2:
-        me2 = await client2.get_me()
-        protected_users.add(me2.id)
+        try:
+            me2 = await client2.get_me()
+            protected_users.add(me2.id)
+            print(f"🛡 Владелец 2: {me2.id}")
+        except Exception as e:
+            print(f"⚠️ Не удалось получить данные второго аккаунта: {e}")
 
 # ========== РЕГИСТРАЦИЯ ОБРАБОТЧИКОВ ==========
 def register_handlers(client_instance):
@@ -326,13 +335,23 @@ async def run_http_server():
 
 # ========== ЗАПУСК ==========
 async def main():
-    await init_protected_users()   # добавляем владельцев в защиту
+    # Запускаем первого клиента
     await client1.start()
     print("✅ Аккаунт 1 запущен")
-    if client2:
-        await client2.start()
-        print("✅ Аккаунт 2 запущен")
 
+    # Пробуем запустить второго
+    if client2:
+        try:
+            await client2.start()
+            print("✅ Аккаунт 2 запущен")
+        except Exception as e:
+            print(f"⚠️ Не удалось запустить второй аккаунт: {e}")
+            client2 = None  # отключаем, чтобы не мешал
+
+    # Инициализируем защиту
+    await init_protected_users()
+
+    # Параллельно работаем и ждём завершения
     tasks = [client1.run_until_disconnected(), run_http_server()]
     if client2:
         tasks.append(client2.run_until_disconnected())
