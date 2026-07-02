@@ -10,15 +10,14 @@ from aiohttp import web
 API_ID = int(os.environ["API_ID"])
 API_HASH = os.environ["API_HASH"]
 SESSION_STRING_1 = os.environ["SESSION_STRING"]
-SESSION_STRING_2 = os.environ.get("SESSION_STRING_FRIEND")  # если нет, только один аккаунт
+SESSION_STRING_2 = os.environ.get("SESSION_STRING_FRIEND")  # может отсутствовать
 PORT = int(os.environ.get("PORT", 10000))
 
-# Клиенты
+# Создаём клиентов
 client1 = TelegramClient(StringSession(SESSION_STRING_1), API_ID, API_HASH)
-if SESSION_STRING_2:
+client2 = None
+if SESSION_STRING_2:   # только если переменная задана и не пуста
     client2 = TelegramClient(StringSession(SESSION_STRING_2), API_ID, API_HASH)
-else:
-    client2 = None
 
 # ========== ОБЩИЕ ДАННЫЕ ==========
 muted_chats = set()
@@ -35,7 +34,7 @@ async def init_protected_users():
         me2 = await client2.get_me()
         protected_users.add(me2.id)
 
-# ========== РЕГИСТРАЦИЯ ХЕНДЛЕРОВ ==========
+# ========== РЕГИСТРАЦИЯ ОБРАБОТЧИКОВ ==========
 def register_handlers(client_instance):
     @client_instance.on(events.NewMessage(outgoing=True, pattern=r'^\.mute$'))
     async def mute_cmd(event):
@@ -63,7 +62,6 @@ def register_handlers(client_instance):
 
     @client_instance.on(events.NewMessage(incoming=True))
     async def delete_muted(event):
-        # Удаляем только если чат в муте и отправитель НЕ в защищённом списке
         if event.chat_id in muted_chats and not event.out:
             if event.sender_id not in protected_users:
                 try:
@@ -165,7 +163,7 @@ def register_handlers(client_instance):
         elapsed = (time.time() - start) * 1000
         await msg.edit(f"🏓 Понг! `{elapsed:.1f}ms`")
 
-    # ---------- .purge ----------
+    # ---------- .purge [число] ----------
     @client_instance.on(events.NewMessage(outgoing=True, pattern=r'^\.purge(?:\s+(\d+))?'))
     async def purge_cmd(event):
         num = int(event.pattern_match.group(1)) if event.pattern_match.group(1) else 10
@@ -184,7 +182,7 @@ def register_handlers(client_instance):
         await asyncio.sleep(3)
         await tmp.delete()
 
-    # ---------- .save / .get ----------
+    # ---------- .save и .get ----------
     @client_instance.on(events.NewMessage(outgoing=True, pattern=r'^\.save\s+(.*)'))
     async def save_cmd(event):
         text = event.pattern_match.group(1)
@@ -199,7 +197,7 @@ def register_handlers(client_instance):
                 return
         await event.reply("❌ Нет сохранённых заметок.")
 
-    # ---------- .stats ----------
+    # ---------- .stats (для группы) ----------
     @client_instance.on(events.NewMessage(outgoing=True, pattern=r'^\.stats$'))
     async def stats_cmd(event):
         chat = await event.get_chat()
@@ -220,7 +218,7 @@ def register_handlers(client_instance):
         )
         await event.reply(text, parse_mode='html')
 
-    # ---------- .tr ----------
+    # ---------- .tr код текст ----------
     @client_instance.on(events.NewMessage(outgoing=True, pattern=r'^\.tr\s+([a-z]{2})\s+(.*)'))
     async def translate_cmd(event):
         target_lang = event.pattern_match.group(1)
@@ -231,20 +229,19 @@ def register_handlers(client_instance):
         except Exception as e:
             await event.reply(f"❌ Ошибка перевода: {e}")
 
-    # ---------- ДРУЗЬЯ (защита от мута) ----------
+    # ---------- ЗАЩИТА ДРУЗЕЙ ----------
     @client_instance.on(events.NewMessage(outgoing=True, pattern=r'^\.addfriend$'))
     async def addfriend_cmd(event):
         if not event.is_private:
             await event.reply("❌ Команда .addfriend работает только в личных сообщениях.")
             return
-        # Определяем собеседника: тот, с кем ведётся диалог
         chat = await event.get_chat()
         friend_id = chat.id
         if friend_id == event.sender_id:
             await event.reply("❌ Нельзя добавить самого себя (вы уже защищены).")
             return
         protected_users.add(friend_id)
-        await event.reply(f"✅ Пользователь добавлен в список защищённых от мута.")
+        await event.reply("✅ Пользователь добавлен в список защищённых от мута.")
 
     @client_instance.on(events.NewMessage(outgoing=True, pattern=r'^\.delfriend$'))
     async def delfriend_cmd(event):
@@ -253,14 +250,13 @@ def register_handlers(client_instance):
             return
         chat = await event.get_chat()
         friend_id = chat.id
+        me = await event.client.get_me()
+        if friend_id == me.id:
+            await event.reply("❌ Нельзя удалить владельца из защиты.")
+            return
         if friend_id in protected_users:
-            # Не даём удалить владельцев
-            me = await event.client.get_me()
-            if friend_id == me.id:
-                await event.reply("❌ Нельзя удалить владельца из защиты.")
-                return
             protected_users.discard(friend_id)
-            await event.reply(f"✅ Пользователь удалён из списка защиты.")
+            await event.reply("✅ Пользователь удалён из списка защиты.")
         else:
             await event.reply("❌ Пользователь не найден в списке защиты.")
 
@@ -308,12 +304,12 @@ def register_handlers(client_instance):
         )
         await event.client.send_message(event.chat_id, text, parse_mode='html')
 
-# Регистрируем обработчики для обоих клиентов
+# Регистрируем обработчики на клиентах
 register_handlers(client1)
 if client2:
     register_handlers(client2)
 
-# ========== HTTP-сервер ==========
+# ========== HTTP-СЕРВЕР ДЛЯ RENDER ==========
 async def handle_health(request):
     return web.Response(text="OK", status=200)
 
@@ -330,7 +326,7 @@ async def run_http_server():
 
 # ========== ЗАПУСК ==========
 async def main():
-    await init_protected_users()   # добавляем владельцев
+    await init_protected_users()   # добавляем владельцев в защиту
     await client1.start()
     print("✅ Аккаунт 1 запущен")
     if client2:
