@@ -1,3 +1,5 @@
 telethon
 deep-translator
 aiohttp
+qrcode[pil]
+gTTS
