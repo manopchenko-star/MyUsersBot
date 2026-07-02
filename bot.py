@@ -1,4 +1,4 @@
-import os, asyncio, json, time, base64, uuid, logging
+import os, asyncio, json, time, base64, uuid
 from pathlib import Path
 from datetime import datetime
 from telethon import TelegramClient, events, Button
@@ -6,7 +6,7 @@ from telethon.sessions import StringSession
 from deep_translator import GoogleTranslator
 from aiohttp import web
 
-# ---------- КОНФИГ ----------
+# ========== КОНФИГ ИЗ ПЕРЕМЕННЫХ ОКРУЖЕНИЯ ==========
 API_ID = int(os.environ["API_ID"])
 API_HASH = os.environ["API_HASH"]
 SESSION_STRING_1 = os.environ["SESSION_STRING"]
@@ -28,20 +28,19 @@ if SESSION_STRING_2:
         print(f"⚠️ Ошибка второго клиента: {e}")
         client2 = None
 
-# Бот для авторизации (если токен задан)
+# Бот для авторизации (файловая сессия, не StringSession)
 bot = None
 if BOT_TOKEN:
-    bot = TelegramClient(StringSession("auth_bot"), API_ID, API_HASH)
-    # Запустим позже
+    bot = TelegramClient("auth_bot_session", API_ID, API_HASH)
 
-# ---------- СОСТОЯНИЕ ----------
+# ========== ОБЩИЕ ДАННЫЕ ==========
 muted_chats = set()
 auto_reply_chats = {}
 auto_reply_global = {'enabled': False, 'text': '⏳ Привет! Я сейчас не в сети, отвечу позже.'}
 last_replied = {}
 protected_users = set()
-command_history = []   # список словарей: {time, user, command}
-auth_tokens = {}       # token -> user_id (для веб-авторизации через бота)
+command_history = []
+auth_tokens = {}
 
 def save_state():
     data = {
@@ -66,7 +65,6 @@ def log_command(user, command):
     command_history.append(entry)
     if len(command_history) > 50:
         command_history = command_history[-50:]
-    # Сохраняем в файл для персистентности
     LOG_FILE.write_text(json.dumps(command_history), encoding="utf-8")
 
 def load_history():
@@ -80,7 +78,18 @@ def load_history():
 load_state()
 load_history()
 
-# ---------- ТЕЛЕГРАМ ОБРАБОТЧИКИ ----------
+async def init_protected_users():
+    me1 = await client1.get_me()
+    protected_users.add(me1.id)
+    if client2:
+        try:
+            me2 = await client2.get_me()
+            protected_users.add(me2.id)
+        except Exception as e:
+            print(f"⚠️ Не удалось получить данные второго аккаунта: {e}")
+    save_state()
+
+# ========== ОБРАБОТЧИКИ TELEGRAM ==========
 def register_handlers(client_instance):
     @client_instance.on(events.NewMessage(outgoing=True, pattern=r'^\.mute$'))
     async def mute_cmd(event):
@@ -122,41 +131,7 @@ def register_handlers(client_instance):
         save_state()
         await event.edit("🔊 <b>Мут снят.</b>", buttons=None, parse_mode='html')
 
-    # ---------- ОЧИСТКА ВСЕГО ЧАТА ----------
-    @client_instance.on(events.NewMessage(outgoing=True, pattern=r'^\.clearall$'))
-    async def clearall_cmd(event):
-        await event.delete()
-        log_command(event.sender_id, ".clearall")
-        # Получаем текущий чат
-        chat = await event.get_chat()
-        if hasattr(chat, 'broadcast') and chat.broadcast:
-            await event.reply("❌ В канале невозможно очистить сообщения.")
-            return
-        # Удаляем все сообщения от бота (свои) и от других, если есть права
-        deleted = 0
-        async for msg in event.client.iter_messages(event.chat_id):
-            try:
-                await msg.delete()
-                deleted += 1
-                await asyncio.sleep(0.5)  # щадим сервер
-            except:
-                pass
-        tmp = await event.client.send_message(event.chat_id, f"🗑 Удалено {deleted} сообщений.")
-        await asyncio.sleep(3)
-        await tmp.delete()
-
-    # ---------- ИСТОРИЯ КОМАНД ----------
-    @client_instance.on(events.NewMessage(outgoing=True, pattern=r'^\.history$'))
-    async def history_cmd(event):
-        if not command_history:
-            await event.reply("📜 История команд пуста.")
-            return
-        text = "📜 <b>Последние команды</b>:\n"
-        for entry in command_history[-10:]:
-            text += f"• {entry['time'][:19]} — ID {entry['user']}: {entry['command']}\n"
-        await event.reply(text, parse_mode='html')
-
-    # ---------- ОСТАЛЬНЫЕ КОМАНДЫ (сокращённо, но включены) ----------
+    # ---------- АВТООТВЕТЧИК ----------
     @client_instance.on(events.NewMessage(outgoing=True, pattern=r'^\.avto(\s+all)?(?:\s+(.*))?'))
     async def avto_cmd(event):
         is_global = bool(event.pattern_match.group(1))
@@ -219,6 +194,7 @@ def register_handlers(client_instance):
             await event.client.send_message(chat_id, reply_text)
             last_replied[chat_id] = event.id
 
+    # ---------- .spam ----------
     @client_instance.on(events.NewMessage(outgoing=True, pattern=r'^\.spam\s+(\d+)\s+(.*)'))
     async def spam_cmd(event):
         count = int(event.pattern_match.group(1))
@@ -232,6 +208,7 @@ def register_handlers(client_instance):
             await event.client.send_message(event.chat_id, text)
             await asyncio.sleep(0.4)
 
+    # ---------- .ping ----------
     @client_instance.on(events.NewMessage(outgoing=True, pattern=r'^\.ping$'))
     async def ping_cmd(event):
         start = time.time()
@@ -239,6 +216,7 @@ def register_handlers(client_instance):
         elapsed = (time.time() - start) * 1000
         await msg.edit(f"🏓 Понг! `{elapsed:.1f}ms`")
 
+    # ---------- .purge ----------
     @client_instance.on(events.NewMessage(outgoing=True, pattern=r'^\.purge(?:\s+(\d+))?'))
     async def purge_cmd(event):
         num = int(event.pattern_match.group(1)) if event.pattern_match.group(1) else 10
@@ -258,6 +236,7 @@ def register_handlers(client_instance):
         await asyncio.sleep(3)
         await tmp.delete()
 
+    # ---------- .save / .get ----------
     @client_instance.on(events.NewMessage(outgoing=True, pattern=r'^\.save\s+(.*)'))
     async def save_cmd(event):
         text = event.pattern_match.group(1)
@@ -272,6 +251,7 @@ def register_handlers(client_instance):
                 return
         await event.reply("❌ Нет сохранённых заметок.")
 
+    # ---------- .stats ----------
     @client_instance.on(events.NewMessage(outgoing=True, pattern=r'^\.stats$'))
     async def stats_cmd(event):
         chat = await event.get_chat()
@@ -292,6 +272,7 @@ def register_handlers(client_instance):
         )
         await event.reply(text, parse_mode='html')
 
+    # ---------- .tr ----------
     @client_instance.on(events.NewMessage(outgoing=True, pattern=r'^\.tr\s+([a-z]{2})\s+(.*)'))
     async def translate_cmd(event):
         target_lang = event.pattern_match.group(1)
@@ -302,6 +283,7 @@ def register_handlers(client_instance):
         except Exception as e:
             await event.reply(f"❌ Ошибка перевода: {e}")
 
+    # ---------- ДРУЗЬЯ (защита от мута) ----------
     @client_instance.on(events.NewMessage(outgoing=True, pattern=r'^\.addfriend$'))
     async def addfriend_cmd(event):
         if not event.is_private:
@@ -349,6 +331,39 @@ def register_handlers(client_instance):
             lines.append(f"• {name}")
         await event.reply("\n".join(lines), parse_mode='html')
 
+    # ---------- .clearall ----------
+    @client_instance.on(events.NewMessage(outgoing=True, pattern=r'^\.clearall$'))
+    async def clearall_cmd(event):
+        await event.delete()
+        log_command(event.sender_id, ".clearall")
+        chat = await event.get_chat()
+        if hasattr(chat, 'broadcast') and chat.broadcast:
+            await event.reply("❌ В канале невозможно очистить сообщения.")
+            return
+        deleted = 0
+        async for msg in event.client.iter_messages(event.chat_id):
+            try:
+                await msg.delete()
+                deleted += 1
+                await asyncio.sleep(0.5)
+            except:
+                pass
+        tmp = await event.client.send_message(event.chat_id, f"🗑 Удалено {deleted} сообщений.")
+        await asyncio.sleep(3)
+        await tmp.delete()
+
+    # ---------- .history ----------
+    @client_instance.on(events.NewMessage(outgoing=True, pattern=r'^\.history$'))
+    async def history_cmd(event):
+        if not command_history:
+            await event.reply("📜 История команд пуста.")
+            return
+        text = "📜 <b>Последние команды</b>:\n"
+        for entry in command_history[-10:]:
+            text += f"• {entry['time'][:19]} — ID {entry['user']}: {entry['command']}\n"
+        await event.reply(text, parse_mode='html')
+
+    # ---------- .help ----------
     @client_instance.on(events.NewMessage(outgoing=True, pattern=r'^\.help$'))
     async def help_cmd(event):
         await event.delete()
@@ -357,11 +372,11 @@ def register_handlers(client_instance):
             "<b>.mute</b> — заглушить чат\n"
             "<b>.unmute</b> — снять мут\n"
             "<b>.clearall</b> — удалить все сообщения в чате\n"
-            "<b>.avto</b> — автоответчик\n"
-            "<b>.spam</b> — спам\n"
-            "<b>.ping</b> — пинг\n"
+            "<b>.avto</b> / .avto all / .unavto — автоответчик\n"
+            "<b>.spam N текст</b> — повторить текст N раз\n"
+            "<b>.ping</b> — проверить пинг\n"
             "<b>.purge [N]</b> — удалить свои последние N сообщений\n"
-            "<b>.save текст</b> / .get\n"
+            "<b>.save текст</b> / .get — заметки\n"
             "<b>.stats</b> — статистика чата\n"
             "<b>.tr код текст</b> — перевод\n"
             "<b>.addfriend</b> / .delfriend / .listfriends\n"
@@ -370,12 +385,12 @@ def register_handlers(client_instance):
         )
         await event.client.send_message(event.chat_id, text, parse_mode='html')
 
-# Регистрируем обработчики на всех клиентах
+# Регистрируем обработчики
 register_handlers(client1)
 if client2:
     register_handlers(client2)
 
-# ---------- БОТ АВТОРИЗАЦИИ (если токен задан) ----------
+# ---------- БОТ АВТОРИЗАЦИИ ----------
 if bot:
     @bot.on(events.CallbackQuery)
     async def auth_callback(event):
@@ -383,12 +398,8 @@ if bot:
         if data.startswith("approve:"):
             token = data.split(":")[1]
             if token in auth_tokens:
-                user_id = auth_tokens[token]
-                # Принять: сохраняем как авторизованный
-                auth_tokens[token] = True  # Помечаем, что одобрен
+                auth_tokens[token] = True
                 await event.edit("✅ Вход одобрен. Можете вернуться на сайт и войти.", buttons=None)
-            else:
-                await event.edit("❌ Токен истёк или неверен.", buttons=None)
         elif data.startswith("reject:"):
             token = data.split(":")[1]
             auth_tokens.pop(token, None)
@@ -396,14 +407,14 @@ if bot:
 
 # ---------- HTTP СЕРВЕР ----------
 async def check_auth(request):
-    # Сначала проверяем Basic Auth (обычный пароль)
+    # Basic Auth
     auth = request.headers.get("Authorization")
     if auth and auth.startswith("Basic "):
         credentials = base64.b64decode(auth[6:]).decode()
         user, pwd = credentials.split(":", 1)
         if user == ADMIN_USER and pwd == ADMIN_PASS:
             return
-    # Проверяем авторизацию через бота (cookie с token)
+    # Проверка токена бота
     token = request.cookies.get("auth_token")
     if token and auth_tokens.get(token) == True:
         return
@@ -436,7 +447,7 @@ async def dashboard(request):
         except:
             name = f"ID: {uid}"
         html += f"<li>{name}"
-        # Не показывать кнопку удаления для владельцев
+        # Не показываем кнопку удаления для владельцев
         if uid not in (me1.id, (client2 and (await client2.get_me()).id)):
             html += f" [<a href='/remove_protected?user_id={uid}'>Удалить</a>]"
         html += "</li>"
@@ -454,13 +465,12 @@ async def dashboard(request):
     return web.Response(text=html, content_type="text/html")
 
 async def login_page(request):
-    """Страница входа с двумя способами."""
     return web.Response(text="""
     <html><body>
     <h2>Вход в панель управления</h2>
-    <form id="loginForm" action="/auth/login" method="post">
-        <input type="text" name="username" placeholder="admin" value="admin"><br>
-        <input type="password" name="password" placeholder="Пароль"><br>
+    <form action="/auth/login" method="post">
+        Логин: <input type="text" name="username" value="admin"><br>
+        Пароль: <input type="password" name="password"><br>
         <button type="submit">Войти с паролем</button>
     </form>
     <hr>
@@ -471,9 +481,7 @@ async def login_page(request):
         const data = await resp.json();
         if (data.token) {
             document.cookie = "auth_token=" + data.token + "; path=/";
-            // Запрашиваем одобрение
-            alert("Запрос отправлен в Telegram. Нажмите 'Принять' в сообщении бота, затем обновите страницу или нажмите 'Проверить вход'.");
-            // Периодически проверяем статус
+            alert("Запрос отправлен в Telegram. Нажмите 'Принять' в сообщении бота, затем обновите страницу.");
             const interval = setInterval(async () => {
                 const check = await fetch('/auth/check_token?token=' + data.token);
                 const status = await check.json();
@@ -482,6 +490,8 @@ async def login_page(request):
                     window.location.href = '/dashboard';
                 }
             }, 3000);
+        } else {
+            alert("Ошибка: " + data.error);
         }
     }
     </script>
@@ -489,24 +499,20 @@ async def login_page(request):
     """, content_type="text/html")
 
 async def auth_login(request):
-    """Обработчик входа с паролем."""
     data = await request.post()
     username = data.get("username", "")
     password = data.get("password", "")
     if username == ADMIN_USER and password == ADMIN_PASS:
         resp = web.HTTPFound("/dashboard")
-        # Ставим куку (просто для идентификации)
         resp.set_cookie("auth_token", "password_ok")
         return resp
     return web.HTTPFound("/login?error=1")
 
 async def request_bot_auth(request):
-    """Генерирует токен и отправляет сообщение владельцу через бота."""
     if not bot:
         return web.json_response({"error": "Бот не настроен"})
     token = str(uuid.uuid4())
-    auth_tokens[token] = "pending"  # статус ожидания
-    # Отправляем сообщение первому владельцу (client1)
+    auth_tokens[token] = "pending"
     me1 = await client1.get_me()
     try:
         await bot.send_message(
@@ -540,7 +546,6 @@ async def unmute_handler(request):
 async def remove_protected(request):
     await check_auth(request)
     user_id = int(request.query["user_id"])
-    # Не даём удалить владельцев
     me1 = await client1.get_me()
     me2_id = None
     if client2:
@@ -555,7 +560,7 @@ async def send_cmd(request):
     data = await request.post()
     cmd = data.get("cmd", "").strip()
     if cmd:
-        await client1.send_message("me", cmd)  # выполняет команду от первого аккаунта
+        await client1.send_message("me", cmd)
     raise web.HTTPFound("/dashboard")
 
 async def handle_health(request):
@@ -581,7 +586,7 @@ async def run_http():
     while True:
         await asyncio.sleep(3600)
 
-# ---------- ЗАПУСК ----------
+# ========== ЗАПУСК ==========
 async def main():
     global client2
     await client1.start()
@@ -605,5 +610,5 @@ async def main():
         tasks.append(bot.run_until_disconnected())
     await asyncio.gather(*tasks)
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     asyncio.run(main())
