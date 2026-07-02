@@ -29,7 +29,7 @@ if SESSION_STRING_2:
         print(f"⚠️ Ошибка второго клиента: {e}")
         client2 = None
 
-# Бот для авторизации (файловая сессия)
+# Бот для авторизации
 bot = None
 if BOT_TOKEN:
     bot = TelegramClient("auth_bot_session", API_ID, API_HASH)
@@ -61,24 +61,56 @@ def load_state():
         except:
             pass
 
-def log_command(user, command, source="Telegram"):
+async def resolve_name(user_id):
+    try:
+        user = await client1.get_entity(user_id)
+        if user.username:
+            return f"@{user.username}"
+        elif user.first_name:
+            return user.first_name
+        else:
+            return str(user_id)
+    except:
+        return str(user_id)
+
+async def resolve_chat_name(chat_id):
+    try:
+        chat = await client1.get_entity(chat_id)
+        if hasattr(chat, 'title') and chat.title:
+            return chat.title
+        else:
+            return f"{chat.first_name or ''} {chat.last_name or ''}".strip() or str(chat_id)
+    except:
+        return str(chat_id)
+
+def log_command(user_id, command, source="Telegram", target_id=None, user_name=None, target_name=None):
     global command_history
-    entry = {"time": datetime.now().isoformat(), "user": user, "command": command, "source": source}
+    entry = {
+        "time": datetime.now().isoformat(),
+        "user_id": user_id,
+        "user_name": user_name or str(user_id),
+        "command": command,
+        "source": source,
+        "target_id": target_id,
+        "target_name": target_name or (str(target_id) if target_id else "Избранное")
+    }
     command_history.append(entry)
     if len(command_history) > 50:
         command_history = command_history[-50:]
-    LOG_FILE.write_text(json.dumps(command_history), encoding="utf-8")
+    LOG_FILE.write_text(json.dumps(command_history, ensure_ascii=False), encoding="utf-8")
     asyncio.ensure_future(broadcast_state())
 
 async def broadcast_state():
     data = {
         "muted_chats": list(muted_chats),
         "protected_users": list(protected_users),
-        "history": command_history[-10:],
+        "history": command_history,
         "chat_names": await get_chat_names(),
         "user_names": await get_user_names(),
+        "acc1_name": (await client1.get_me()).first_name or "Аккаунт 1",
+        "acc2_name": (await client2.get_me()).first_name if client2 else None,
     }
-    msg = json.dumps(data, default=str)
+    msg = json.dumps(data, default=str, ensure_ascii=False)
     for ws in list(ws_clients):
         try:
             await ws.send_str(msg)
@@ -88,23 +120,13 @@ async def broadcast_state():
 async def get_chat_names():
     names = {}
     for cid in muted_chats:
-        try:
-            chat = await client1.get_entity(cid)
-            name = chat.title if hasattr(chat, 'title') else f"{chat.first_name} {chat.last_name or ''}".strip()
-            names[str(cid)] = name
-        except:
-            names[str(cid)] = str(cid)
+        names[str(cid)] = await resolve_chat_name(cid)
     return names
 
 async def get_user_names():
     names = {}
     for uid in protected_users:
-        try:
-            user = await client1.get_entity(uid)
-            name = f"@{user.username}" if user.username else f"{user.first_name} (ID: {uid})"
-            names[str(uid)] = name
-        except:
-            names[str(uid)] = f"ID: {uid}"
+        names[str(uid)] = await resolve_name(uid)
     return names
 
 def load_history():
@@ -140,7 +162,9 @@ def register_handlers(client_instance):
         muted_chats.add(event.chat_id)
         save_state()
         await event.delete()
-        log_command(event.sender_id, ".mute", source="Telegram")
+        user_name = await resolve_name(event.sender_id)
+        target_name = await resolve_chat_name(event.chat_id)
+        log_command(event.sender_id, ".mute", source="Telegram", target_id=event.chat_id, user_name=user_name, target_name=target_name)
         text = (
             "🔇 <b>Пользователь заглушен</b>\n"
             "Все его сообщения будут <i>мгновенно удаляться</i>.\n\n"
@@ -155,7 +179,9 @@ def register_handlers(client_instance):
         muted_chats.discard(event.chat_id)
         save_state()
         await event.delete()
-        log_command(event.sender_id, ".unmute", source="Telegram")
+        user_name = await resolve_name(event.sender_id)
+        target_name = await resolve_chat_name(event.chat_id)
+        log_command(event.sender_id, ".unmute", source="Telegram", target_id=event.chat_id, user_name=user_name, target_name=target_name)
         await event.client.send_message(event.chat_id, "🔊 <b>Мут снят.</b> Сообщения больше не удаляются.", parse_mode='html')
         await broadcast_state()
 
@@ -172,7 +198,9 @@ def register_handlers(client_instance):
     async def unmute_callback(event):
         muted_chats.discard(event.chat_id)
         save_state()
-        log_command(event.sender_id, "Размутил (кнопка)", source="Telegram")
+        user_name = await resolve_name(event.sender_id)
+        target_name = await resolve_chat_name(event.chat_id)
+        log_command(event.sender_id, "Размутил (кнопка)", source="Telegram", target_id=event.chat_id, user_name=user_name, target_name=target_name)
         await event.edit("🔊 <b>Мут снят.</b>", buttons=None, parse_mode='html')
         await broadcast_state()
 
@@ -245,7 +273,9 @@ def register_handlers(client_instance):
         count = int(event.pattern_match.group(1))
         text = event.pattern_match.group(2)
         await event.delete()
-        log_command(event.sender_id, f".spam {count} {text}", source="Telegram")
+        user_name = await resolve_name(event.sender_id)
+        target_name = await resolve_chat_name(event.chat_id)
+        log_command(event.sender_id, f".spam {count} {text}", source="Telegram", target_id=event.chat_id, user_name=user_name, target_name=target_name)
         if count > 50:
             await event.client.send_message(event.chat_id, "⚠️ Максимум 50 повторений за раз.")
             return
@@ -268,7 +298,9 @@ def register_handlers(client_instance):
         if num > 200:
             num = 200
         await event.delete()
-        log_command(event.sender_id, f".purge {num}", source="Telegram")
+        user_name = await resolve_name(event.sender_id)
+        target_name = await resolve_chat_name(event.chat_id)
+        log_command(event.sender_id, f".purge {num}", source="Telegram", target_id=event.chat_id, user_name=user_name, target_name=target_name)
         deleted = 0
         async for message in event.client.iter_messages(event.chat_id, from_user='me', limit=num):
             try:
@@ -328,7 +360,7 @@ def register_handlers(client_instance):
         except Exception as e:
             await event.reply(f"❌ Ошибка перевода: {e}")
 
-    # ---------- ДРУЗЬЯ (защита от мута) ----------
+    # ---------- ДРУЗЬЯ ----------
     @client_instance.on(events.NewMessage(outgoing=True, pattern=r'^\.addfriend$'))
     async def addfriend_cmd(event):
         if not event.is_private:
@@ -380,7 +412,9 @@ def register_handlers(client_instance):
     @client_instance.on(events.NewMessage(outgoing=True, pattern=r'^\.clearall$'))
     async def clearall_cmd(event):
         await event.delete()
-        log_command(event.sender_id, ".clearall", source="Telegram")
+        user_name = await resolve_name(event.sender_id)
+        target_name = await resolve_chat_name(event.chat_id)
+        log_command(event.sender_id, ".clearall", source="Telegram", target_id=event.chat_id, user_name=user_name, target_name=target_name)
         chat = await event.get_chat()
         if hasattr(chat, 'broadcast') and chat.broadcast:
             await event.reply("❌ В канале невозможно очистить сообщения.")
@@ -405,7 +439,7 @@ def register_handlers(client_instance):
             return
         text = "📜 <b>Последние команды</b>:\n"
         for entry in command_history[-10:]:
-            text += f"• {entry['time'][:19]} — {entry['source']} {entry['user']}: {entry['command']}\n"
+            text += f"• {entry['time'][:19]} — {entry['source']} {entry['user_name']}: {entry['command']} → {entry['target_name']}\n"
         await event.reply(text, parse_mode='html')
 
     # ---------- .help ----------
@@ -430,7 +464,6 @@ def register_handlers(client_instance):
         )
         await event.client.send_message(event.chat_id, text, parse_mode='html')
 
-# Регистрируем обработчики
 register_handlers(client1)
 if client2:
     register_handlers(client2)
@@ -486,6 +519,11 @@ async def auth_login(request):
         return resp
     return web.HTTPFound("/login?error=1")
 
+async def logout(request):
+    resp = web.HTTPFound("/login")
+    resp.del_cookie("auth_token")
+    return resp
+
 async def request_bot_auth(request):
     if not bot:
         return web.json_response({"error": "Бот не настроен"})
@@ -520,7 +558,12 @@ async def unmute_handler(request):
     muted_chats.discard(chat_id)
     save_state()
     account = request.query.get("account", "1")
-    log_command(account, f"Размутил чат {chat_id}", source="Web")
+    if account == "2":
+        user_name = (await client2.get_me()).first_name if client2 else "Аккаунт2"
+    else:
+        user_name = (await client1.get_me()).first_name or "Аккаунт1"
+    target_name = await resolve_chat_name(chat_id)
+    log_command(0, f"Размутил чат {chat_id}", source="Web", target_id=chat_id, user_name=user_name, target_name=target_name)
     await broadcast_state()
     raise web.HTTPFound("/dashboard")
 
@@ -532,23 +575,40 @@ async def remove_protected(request):
     if user_id != me1.id and user_id != me2_id:
         protected_users.discard(user_id)
         save_state()
-        log_command("admin", f"Удалил из защиты {user_id}", source="Web")
+        user_name = await resolve_name(me1.id)
+        target_name = await resolve_name(user_id)
+        log_command(me1.id, f"Удалил из защиты {user_id}", source="Web", target_id=user_id, user_name=user_name, target_name=target_name)
         await broadcast_state()
     raise web.HTTPFound("/dashboard")
 
 async def send_cmd(request):
     await check_auth(request)
     data = await request.post()
-    cmd = data.get("cmd", "").strip()
     account = data.get("account", "1")
-    if not cmd:
+    target = data.get("target", "").strip()
+    command = data.get("command", "").strip()
+    args = data.get("args", "").strip()
+    if not command:
         raise web.HTTPFound("/dashboard")
+    full_cmd = command
+    if args:
+        full_cmd = f"{command} {args}"
     if account == "2" and client2:
-        await client2.send_message("me", cmd)
-        log_command("Аккаунт2", cmd, source="Web")
+        client = client2
+        acc_name = (await client2.get_me()).first_name or "Аккаунт2"
     else:
-        await client1.send_message("me", cmd)
-        log_command("Аккаунт1", cmd, source="Web")
+        client = client1
+        acc_name = (await client1.get_me()).first_name or "Аккаунт1"
+    target_entity = target if target else 'me'
+    try:
+        await client.send_message(target_entity, full_cmd)
+        target_name = await resolve_chat_name(target_entity) if target_entity != 'me' else "Избранное"
+        me = await client1.get_me()
+        await client1.send_message(me.id, f"📤 Команда из веб-панели:\n{acc_name} → {target_entity}: {full_cmd}")
+    except Exception as e:
+        log_command(0, f"ОШИБКА: {full_cmd} -> {e}", source="Web", user_name=acc_name, target_name=target)
+    else:
+        log_command(0, full_cmd, source="Web", user_name=acc_name, target_name=target_name)
     raise web.HTTPFound("/dashboard")
 
 async def handle_health(request):
@@ -562,24 +622,24 @@ async def websocket_handler(request):
     ws = web.WebSocketResponse()
     await ws.prepare(request)
     ws_clients.add(ws)
-    await ws.send_str(json.dumps({
+    initial = {
         "muted_chats": list(muted_chats),
         "protected_users": list(protected_users),
-        "history": command_history[-10:],
+        "history": command_history,
         "chat_names": await get_chat_names(),
         "user_names": await get_user_names(),
-    }, default=str))
+        "acc1_name": (await client1.get_me()).first_name or "Аккаунт 1",
+        "acc2_name": (await client2.get_me()).first_name if client2 else None,
+    }
+    await ws.send_str(json.dumps(initial, default=str, ensure_ascii=False))
     try:
         async for msg in ws:
-            if msg.type == WSMsgType.TEXT:
-                pass
-            elif msg.type == WSMsgType.ERROR:
-                print(f"WebSocket error: {ws.exception()}")
+            pass
     finally:
         ws_clients.discard(ws)
     return ws
 
-# WebSocket для гостей (одноразовое состояние)
+# WebSocket для гостей
 async def guest_ws_handler(request):
     key = request.query.get("key", "")
     if key != GUEST_KEY:
@@ -589,16 +649,15 @@ async def guest_ws_handler(request):
     await ws.send_str(json.dumps({
         "muted_chats": list(muted_chats),
         "protected_users": list(protected_users),
-        "history": command_history[-10:],
+        "history": command_history,
         "chat_names": await get_chat_names(),
         "user_names": await get_user_names(),
-    }, default=str))
+    }, default=str, ensure_ascii=False))
     await ws.close()
     return ws
 
 # HTML ШАБЛОНЫ
-HTML_LOGIN = """
-<html><head><meta charset="utf-8"><title>Вход</title>
+HTML_LOGIN = """<html><head><meta charset="utf-8"><title>Вход</title>
 <style>
 body { font-family: 'Segoe UI', sans-serif; background: #1a1a2e; color: #e0e0e0; display: flex; justify-content: center; align-items: center; height: 100vh; }
 form { background: #16213e; padding: 2rem; border-radius: 12px; box-shadow: 0 0 20px rgba(0,0,0,0.5); }
@@ -614,22 +673,27 @@ button:hover { background: #e94560; }
 </form>
 </body></html>"""
 
-HTML_DASHBOARD = """
-<html><head><meta charset="utf-8"><title>Userbot Panel</title>
+HTML_DASHBOARD = """<html><head><meta charset="utf-8"><title>Userbot Panel</title>
 <style>
 body { font-family: 'Segoe UI', sans-serif; background: #1a1a2e; color: #e0e0e0; margin: 0; padding: 20px; }
 .tabs { display: flex; gap: 10px; margin-bottom: 20px; }
 .tab { background: #16213e; padding: 10px 20px; border-radius: 8px; cursor: pointer; }
 .tab.active { background: #e94560; }
-.content { background: #0f3460; padding: 20px; border-radius: 12px; }
+.content { background: #0f3460; padding: 20px; border-radius: 12px; margin-bottom: 20px; }
 button { background: #e94560; color: white; border: none; padding: 5px 15px; border-radius: 6px; cursor: pointer; }
 button:hover { opacity: 0.8; }
 select, input { padding: 5px; border-radius: 4px; border: none; }
 ul { list-style: none; padding: 0; }
 li { margin: 8px 0; }
+.logout { float: right; background: #333; }
+table { width: 100%; border-collapse: collapse; margin-top: 10px; }
+th, td { border: 1px solid #555; padding: 5px; text-align: left; }
+th { background: #16213e; }
+.filter-bar { margin-bottom: 10px; }
 </style>
 </head><body>
-<h1>Userbot Panel</h1>
+<h1>Userbot Panel <a href="/logout" class="logout" style="color:white;text-decoration:none;padding:5px 10px;border-radius:4px;">Выйти</a></h1>
+<p>Аккаунт 1: <span id="acc1Name">Загрузка...</span><br>Аккаунт 2: <span id="acc2Name">Загрузка...</span></p>
 <div class="tabs">
   <div class="tab active" onclick="showTab('muted')">Чаты в муте</div>
   <div class="tab" onclick="showTab('protected')">Защищённые</div>
@@ -647,21 +711,55 @@ li { margin: 8px 0; }
 <div id="commands" class="content" style="display:none">
   <h2>Выполнить команду</h2>
   <form action="/send_cmd" method="post">
-    <select name="account">
+    <label>Аккаунт:</label>
+    <select name="account" id="accountSelect">
       <option value="1">Аккаунт 1</option>
       <option value="2">Аккаунт 2</option>
-    </select>
-    <input type="text" name="cmd" placeholder=".ping или .spam 3 Привет" style="width:300px">
+    </select><br><br>
+    <label>Чат (username или ID, пусто = Избранное):</label><br>
+    <input type="text" name="target" placeholder="например, @durov или -123456" style="width:300px"><br><br>
+    <label>Команда:</label>
+    <select name="command" id="cmdSelect" onchange="updateArgsPlaceholder()">
+      <option value=".mute">.mute</option>
+      <option value=".unmute">.unmute</option>
+      <option value=".spam">.spam</option>
+      <option value=".ping">.ping</option>
+      <option value=".purge">.purge</option>
+      <option value=".clearall">.clearall</option>
+      <option value=".stats">.stats</option>
+      <option value=".tr">.tr</option>
+      <option value=".avto">.avto</option>
+      <option value=".help">.help</option>
+    </select><br><br>
+    <label>Аргументы:</label><br>
+    <input type="text" name="args" id="argsInput" placeholder="например, 3 Привет" style="width:300px"><br><br>
     <button type="submit">Отправить</button>
   </form>
 </div>
 <div id="history" class="content" style="display:none">
-  <h2>Последние действия</h2>
-  <pre id="historyLog"></pre>
+  <h2>История команд</h2>
+  <div class="filter-bar">
+    <label>Фильтр по аккаунту: </label>
+    <select id="accountFilter" onchange="renderHistory()">
+      <option value="all">Все</option>
+      <option value="acc1">Аккаунт 1</option>
+      <option value="acc2">Аккаунт 2</option>
+    </select>
+    <button onclick="toggleAllHistory()">Показать все</button>
+  </div>
+  <table>
+    <thead><tr><th>Время</th><th>Источник</th><th>Пользователь</th><th>Команда</th><th>Цель</th></tr></thead>
+    <tbody id="historyBody"></tbody>
+  </table>
 </div>
 
 <script>
 let ws;
+let fullHistory = [];
+let acc1Name = "Аккаунт 1", acc2Name = "Аккаунт 2";
+let showAllHistory = false;
+const MAX_VISIBLE = 20;
+
 function connectWS() {
   ws = new WebSocket('wss://' + location.host + '/ws');
   ws.onmessage = function(event) {
@@ -671,6 +769,34 @@ function connectWS() {
   ws.onclose = function() { setTimeout(connectWS, 3000); };
 }
 function updateUI(data) {
+  document.getElementById('acc1Name').textContent = data.acc1_name || 'Аккаунт 1';
+  document.getElementById('acc2Name').textContent = data.acc2_name || 'не подключён';
+  acc1Name = data.acc1_name || 'Аккаунт 1';
+  acc2Name = data.acc2_name;
+  // Обновим селект
+  let sel = document.getElementById('accountSelect');
+  sel.options[0].text = acc1Name;
+  if (acc2Name) {
+    sel.options[1].text = acc2Name;
+  } else {
+    sel.options[1].text = 'Аккаунт 2 (отключён)';
+  }
+  // Селект фильтра
+  let filter = document.getElementById('accountFilter');
+  filter.options[0].text = 'Все';
+  filter.options[1].text = acc1Name;
+  if (acc2Name) {
+    filter.options[2].text = acc2Name;
+  } else {
+    filter.options[2].text = 'Аккаунт 2 (нет)';
+  }
+
+  fullHistory = data.history || [];
+  // обновляем только если открыта вкладка истории
+  if (document.getElementById('history').style.display !== 'none') {
+    renderHistory();
+  }
+
   let mutedHtml = '';
   for (let id in data.chat_names) {
     mutedHtml += `<li>${data.chat_names[id]} <button onclick="unmuteChat(${id})">Размутить</button></li>`;
@@ -682,12 +808,6 @@ function updateUI(data) {
     protectedHtml += `<li>${data.user_names[id]}</li>`;
   }
   document.getElementById('protectedList').innerHTML = protectedHtml || '<li>Пусто</li>';
-
-  let hist = '';
-  data.history.forEach(e => {
-    hist += `[${e.time.substr(11,8)}] ${e.source} ${e.user}: ${e.command}\n`;
-  });
-  document.getElementById('historyLog').textContent = hist || 'Нет записей';
 }
 function unmuteChat(chatId) {
   fetch('/unmute?chat_id=' + chatId + '&account=' + document.querySelector('select[name="account"]').value)
@@ -698,13 +818,54 @@ function showTab(tab) {
   document.getElementById(tab).style.display = 'block';
   document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
   event.target.classList.add('active');
+  if (tab === 'history') renderHistory();
+}
+function renderHistory() {
+  const filter = document.getElementById('accountFilter').value;
+  let filtered = fullHistory;
+  if (filter === 'acc1') {
+    filtered = fullHistory.filter(e => e.user_name === acc1Name);
+  } else if (filter === 'acc2') {
+    filtered = fullHistory.filter(e => e.user_name === acc2Name);
+  }
+  if (!showAllHistory) {
+    filtered = filtered.slice(-MAX_VISIBLE);
+  }
+  const tbody = document.getElementById('historyBody');
+  let html = '';
+  filtered.forEach(e => {
+    html += `<tr>
+      <td>${e.time.substr(11,8)}</td>
+      <td>${e.source}</td>
+      <td>${e.user_name}</td>
+      <td>${e.command}</td>
+      <td>${e.target_name || ''}</td>
+    </tr>`;
+  });
+  tbody.innerHTML = html || '<tr><td colspan="5">Нет записей</td></tr>';
+}
+function toggleAllHistory() {
+  showAllHistory = !showAllHistory;
+  document.querySelector('#history .filter-bar button').textContent = showAllHistory ? 'Показать последние 20' : 'Показать все';
+  renderHistory();
+}
+function updateArgsPlaceholder() {
+  const cmd = document.getElementById('cmdSelect').value;
+  const inp = document.getElementById('argsInput');
+  switch(cmd) {
+    case '.spam': inp.placeholder = 'число текст'; break;
+    case '.purge': inp.placeholder = 'число (по умолч. 10)'; break;
+    case '.tr': inp.placeholder = 'код_языка текст'; break;
+    case '.avto': inp.placeholder = 'текст или all текст'; break;
+    default: inp.placeholder = ''; break;
+  }
 }
 connectWS();
+updateArgsPlaceholder();
 </script>
 </body></html>"""
 
-HTML_GUEST = """
-<html><head><meta charset="utf-8"><title>Гостевой просмотр</title>
+HTML_GUEST = """<html><head><meta charset="utf-8"><title>Гостевой просмотр</title>
 <style>body { font-family: 'Segoe UI', sans-serif; background: #1a1a2e; color: #e0e0e0; padding: 20px; }
 ul { list-style: none; } li { margin: 5px 0; }</style>
 </head><body>
@@ -722,11 +883,11 @@ ws.onmessage = function(event) {
   for (let id in data.user_names) {
     html += '<li>' + data.user_names[id] + '</li>';
   }
-  html += '</ul><h3>История:</h3><pre>';
+  html += '</ul><h3>История:</h3><table border="1" cellpadding="4"><tr><th>Время</th><th>Источник</th><th>Пользователь</th><th>Команда</th><th>Цель</th></tr>';
   data.history.forEach(e => {
-    html += `[${e.time.substr(11,8)}] ${e.source} ${e.user}: ${e.command}\n`;
+    html += `<tr><td>${e.time.substr(11,8)}</td><td>${e.source}</td><td>${e.user_name}</td><td>${e.command}</td><td>${e.target_name||''}</td></tr>`;
   });
-  html += '</pre>';
+  html += '</table>';
   document.getElementById('content').innerHTML = html;
 };
 </script>
@@ -736,6 +897,7 @@ app = web.Application()
 app.router.add_get("/", handle_health)
 app.router.add_get("/login", login_page)
 app.router.add_post("/auth/login", auth_login)
+app.router.add_get("/logout", logout)
 app.router.add_get("/auth/request_bot", request_bot_auth)
 app.router.add_get("/auth/check_token", check_token)
 app.router.add_get("/dashboard", dashboard)
@@ -755,7 +917,6 @@ async def run_http():
     while True:
         await asyncio.sleep(3600)
 
-# ========== ЗАПУСК ==========
 async def main():
     global client2
     await client1.start()
