@@ -1,4 +1,4 @@
-import os, asyncio, json, time, base64, uuid, random, string, io, re, urllib.parse, logging, unicodedata
+import os, asyncio, json, time, base64, uuid, random, string, io, re, urllib.parse, logging, unicodedata, tempfile
 from pathlib import Path
 from datetime import datetime, timedelta
 from telethon import TelegramClient, events, Button
@@ -6,12 +6,12 @@ from telethon.errors import FloodWaitError, ChatAdminRequiredError
 from telethon.sessions import StringSession
 from telethon.tl.types import MessageEntityTextUrl, DocumentAttributeAudio
 from deep_translator import GoogleTranslator
-from aiohttp import web, WSMsgType, ClientSession, FormData
+from aiohttp import web, WSMsgType, ClientSession
 import qrcode
 from gtts import gTTS
 import speech_recognition as sr
 from pydub import AudioSegment
-import tempfile
+AudioSegment.converter = "/opt/render/project/src/ffmpeg"
 
 API_ID = int(os.environ["API_ID"])
 API_HASH = os.environ["API_HASH"]
@@ -22,7 +22,6 @@ GUEST_KEY = os.environ.get("GUEST_KEY", "friend123")
 PORT = int(os.environ.get("PORT", 10000))
 ADMIN_USER = os.environ.get("ADMIN_USER", "admin")
 ADMIN_PASS = os.environ.get("ADMIN_PASSWORD", "Anopchenko2011")
-WIT_AI_TOKEN = os.environ.get("WIT_AI_TOKEN", "")
 DATA_FILE = Path("userbot_data.json")
 LOG_FILE = Path("command_history.json")
 WARN_FILE = Path("warns.json")
@@ -484,18 +483,15 @@ def register_handlers(client_instance):
             return
         await event.reply("🎙 Распознаю речь...")
         try:
-            # Скачиваем аудио во временный файл
             with tempfile.NamedTemporaryFile(suffix='.ogg', delete=False) as tmp:
                 await reply.download_media(tmp.name)
                 ogg_path = tmp.name
-            # Конвертация в WAV через pydub (требует ffmpeg)
             wav_path = ogg_path.replace('.ogg', '.wav')
             audio = AudioSegment.from_file(ogg_path, format="ogg")
             audio.export(wav_path, format="wav")
             recognizer = sr.Recognizer()
             with sr.AudioFile(wav_path) as source:
                 audio_data = recognizer.record(source)
-            # Используем Google Web Speech API (бесплатно, без ключа)
             text = recognizer.recognize_google(audio_data, language="ru-RU")
             await event.reply(f"📝 Распознанный текст:\n{text}")
             log_command(event.sender_id, f".stt: {text}", source="Telegram", target_id=event.chat_id)
@@ -507,7 +503,7 @@ def register_handlers(client_instance):
             if os.path.exists(wav_path):
                 os.unlink(wav_path)
 
-    # ----- НОВЫЕ КОМАНДЫ -----
+    # ----- ОСТАЛЬНЫЕ КОМАНДЫ (полный набор) -----
     @client_instance.on(events.NewMessage(outgoing=True, pattern=r'^\.qr\s+(.*)'))
     async def qr_cmd(event):
         text = event.pattern_match.group(1)
