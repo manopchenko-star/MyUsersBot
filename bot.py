@@ -2,11 +2,11 @@ import os, asyncio, json, time, base64, uuid
 from pathlib import Path
 from datetime import datetime
 from telethon import TelegramClient, events, Button
+from telethon.errors import FloodWaitError
 from telethon.sessions import StringSession
 from deep_translator import GoogleTranslator
 from aiohttp import web, WSMsgType, ClientSession
 
-# ---------- КОНФИГ ИЗ ПЕРЕМЕННЫХ ОКРУЖЕНИЯ ----------
 API_ID = int(os.environ["API_ID"])
 API_HASH = os.environ["API_HASH"]
 SESSION_STRING_1 = os.environ["SESSION_STRING"]
@@ -17,11 +17,10 @@ PORT = int(os.environ.get("PORT", 10000))
 ADMIN_USER = os.environ.get("ADMIN_USER", "admin")
 ADMIN_PASS = os.environ.get("ADMIN_PASSWORD", "Anopchenko2011")
 AI_API_KEY = os.environ.get("AI_API_KEY", "")
-AI_MODEL = os.environ.get("AI_MODEL", "google/gemini-2.0-flash-lite")
+AI_MODEL = os.environ.get("AI_MODEL", "google/gemini-2.0-flash-lite:free")
 DATA_FILE = Path("userbot_data.json")
 LOG_FILE = Path("command_history.json")
 
-# Глобальные клиенты
 client1 = TelegramClient(StringSession(SESSION_STRING_1), API_ID, API_HASH)
 client2 = None
 if SESSION_STRING_2:
@@ -31,12 +30,10 @@ if SESSION_STRING_2:
         print(f"⚠️ Ошибка второго клиента: {e}")
         client2 = None
 
-# Бот для авторизации
 bot = None
 if BOT_TOKEN:
     bot = TelegramClient("auth_bot_session", API_ID, API_HASH)
 
-# ========== ОБЩИЕ ДАННЫЕ ==========
 muted_chats = set()
 auto_reply_chats = {}
 auto_reply_global = {'enabled': False, 'text': '⏳ Привет! Я сейчас не в сети, отвечу позже.', 'ai': False}
@@ -152,7 +149,6 @@ async def init_protected_users():
     save_state()
     await broadcast_state()
 
-# ---------- ФУНКЦИЯ ЗАПРОСА К OPENROUTER ----------
 async def ask_ai(prompt: str) -> str:
     if not AI_API_KEY or not http_session:
         return "❌ ИИ не настроен (API ключ отсутствует)."
@@ -180,7 +176,6 @@ async def ask_ai(prompt: str) -> str:
     except Exception as e:
         return f"❌ Ошибка запроса: {e}"
 
-# ========== ОБРАБОТЧИКИ TELEGRAM ==========
 def register_handlers(client_instance):
     @client_instance.on(events.NewMessage(outgoing=True, pattern=r'^\.mute$'))
     async def mute_cmd(event):
@@ -232,7 +227,6 @@ def register_handlers(client_instance):
         await event.edit("🔊 <b>Мут снят.</b>", buttons=None, parse_mode='html')
         await broadcast_state()
 
-    # ---------- АВТООТВЕТЧИК ----------
     @client_instance.on(events.NewMessage(outgoing=True, pattern=r'^\.avto(\s+all)?(?:\s+(.*))?'))
     async def avto_cmd(event):
         is_global = bool(event.pattern_match.group(1))
@@ -279,7 +273,6 @@ def register_handlers(client_instance):
             await event.delete()
             await event.client.send_message(event.chat_id, "❌ <b>Автоответчик выключен в этом чате.</b>", parse_mode='html')
 
-    # ---------- .ai команды ----------
     @client_instance.on(events.NewMessage(outgoing=True, pattern=r'^\.ai\s+on$'))
     async def ai_on_cmd(event):
         chat = await event.get_chat()
@@ -315,13 +308,11 @@ def register_handlers(client_instance):
             await event.reply("🔇 ИИ-автоответчик выключен.")
         log_command(event.sender_id, ".ai status", source="Telegram", target_id=chat_id)
 
-    # ---------- ОБЪЕДИНЁННЫЙ ОБРАБОТЧИК ВХОДЯЩИХ ДЛЯ АВТООТВЕТЧИКА ----------
     @client_instance.on(events.NewMessage(incoming=True))
     async def auto_reply_handler(event):
         if event.out:
             return
         chat_id = event.chat_id
-        # Мут: удаляем сообщения
         if chat_id in muted_chats:
             if event.sender_id not in protected_users:
                 try:
@@ -329,7 +320,6 @@ def register_handlers(client_instance):
                 except:
                     pass
             return
-        # Проверяем автоответчик
         chat_settings = auto_reply_chats.get(chat_id)
         if chat_settings and chat_settings.get('enabled'):
             if chat_settings.get('ai'):
@@ -361,7 +351,6 @@ def register_handlers(client_instance):
                 await event.client.send_message(chat_id, reply_text)
                 last_replied[chat_id] = event.id
 
-    # ---------- ОСТАЛЬНЫЕ КОМАНДЫ ----------
     @client_instance.on(events.NewMessage(outgoing=True, pattern=r'^\.spam\s+(\d+)\s+(.*)'))
     async def spam_cmd(event):
         count = int(event.pattern_match.group(1))
@@ -537,7 +526,7 @@ def register_handlers(client_instance):
             "<b>.unmute</b> — снять мут\n"
             "<b>.clearall</b> — удалить все сообщения в чате\n"
             "<b>.avto</b> / .avto all / .unavto — автоответчик\n"
-            "<b>.ai on</b> — включить ИИ-автоответчик (OpenRouter)\n"
+            "<b>.ai on</b> — включить ИИ-автоответчик\n"
             "<b>.ai off</b> — выключить ИИ-автоответчик\n"
             "<b>.spam N текст</b> — повторить текст N раз\n"
             "<b>.ping</b> — проверить пинг\n"
@@ -555,7 +544,6 @@ register_handlers(client1)
 if client2:
     register_handlers(client2)
 
-# ---------- БОТ АВТОРИЗАЦИИ ----------
 if bot:
     @bot.on(events.CallbackQuery)
     async def auth_callback(event):
@@ -570,7 +558,6 @@ if bot:
             auth_tokens.pop(token, None)
             await event.edit("🚫 Вход отклонён.", buttons=None)
 
-# ---------- HTTP СЕРВЕР ----------
 async def check_auth(request):
     auth = request.headers.get("Authorization")
     if auth and auth.startswith("Basic "):
@@ -876,7 +863,6 @@ async def send_cmd(request):
 async def handle_health(request):
     return web.Response(text="OK")
 
-# WebSocket для админов
 async def websocket_handler(request):
     token = request.cookies.get("auth_token")
     if not token or (token != "password_ok" and auth_tokens.get(token) != True):
@@ -901,7 +887,6 @@ async def websocket_handler(request):
         ws_clients.discard(ws)
     return ws
 
-# WebSocket для гостей
 async def guest_ws_handler(request):
     key = request.query.get("key", "")
     if key != GUEST_KEY:
@@ -918,7 +903,6 @@ async def guest_ws_handler(request):
     await ws.close()
     return ws
 
-# HTML ШАБЛОНЫ
 HTML_LOGIN = f"""<html><head><meta charset="utf-8"><title>Вход</title>
 <style>
 body {{ font-family: 'Segoe UI', sans-serif; background: #1a1a2e; color: #e0e0e0; display: flex; justify-content: center; align-items: center; height: 100vh; }}
@@ -1241,14 +1225,23 @@ async def main():
             print(f"⚠️ Не удалось запустить второй аккаунт: {e}")
             client2 = None
     if bot:
-        await bot.start(bot_token=BOT_TOKEN)
-        print("🤖 Бот авторизации запущен")
+        while True:
+            try:
+                await bot.start(bot_token=BOT_TOKEN)
+                print("🤖 Бот авторизации запущен")
+                break
+            except FloodWaitError as e:
+                print(f"⏳ FloodWait: ждём {e.seconds} секунд...")
+                await asyncio.sleep(e.seconds)
+            except Exception as e:
+                print(f"⚠️ Не удалось запустить бота: {e}")
+                break
     await init_protected_users()
 
     tasks = [client1.run_until_disconnected(), run_http()]
     if client2:
         tasks.append(client2.run_until_disconnected())
-    if bot:
+    if bot and bot.is_connected():
         tasks.append(bot.run_until_disconnected())
     await asyncio.gather(*tasks)
     if http_session:
