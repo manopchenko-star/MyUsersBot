@@ -13,10 +13,10 @@ SESSION_STRING_1 = os.environ["SESSION_STRING"]
 SESSION_STRING_2 = os.environ.get("SESSION_STRING_FRIEND")  # может отсутствовать
 PORT = int(os.environ.get("PORT", 10000))
 
-# Создаём клиентов
+# Безопасное создание клиентов
 client1 = TelegramClient(StringSession(SESSION_STRING_1), API_ID, API_HASH)
 client2 = None
-if SESSION_STRING_2:   # только если переменная задана и не пуста
+if SESSION_STRING_2:
     client2 = TelegramClient(StringSession(SESSION_STRING_2), API_ID, API_HASH)
 
 # ========== ОБЩИЕ ДАННЫЕ ==========
@@ -229,7 +229,7 @@ def register_handlers(client_instance):
         except Exception as e:
             await event.reply(f"❌ Ошибка перевода: {e}")
 
-    # ---------- ЗАЩИТА ДРУЗЕЙ ----------
+    # ---------- ДРУЗЬЯ (защита от мута) ----------
     @client_instance.on(events.NewMessage(outgoing=True, pattern=r'^\.addfriend$'))
     async def addfriend_cmd(event):
         if not event.is_private:
