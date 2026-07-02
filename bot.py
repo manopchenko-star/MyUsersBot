@@ -562,7 +562,7 @@ async def unmute_handler(request):
     target_name = await resolve_chat_name(chat_id)
     log_command(0, f"Размутил чат {chat_id}", source="Web", target_id=chat_id, user_name=user_name, target_name=target_name)
     await broadcast_state()
-    raise web.HTTPFound("/dashboard")
+    raise web.HTTPFound("/dashboard?msg=Чат+размучен")
 
 async def remove_protected(request):
     await check_auth(request)
@@ -576,7 +576,8 @@ async def remove_protected(request):
         target_name = await resolve_name(user_id)
         log_command(me1.id, f"Удалил из защиты {user_id}", source="Web", target_id=user_id, user_name=user_name, target_name=target_name)
         await broadcast_state()
-    raise web.HTTPFound("/dashboard")
+        raise web.HTTPFound("/dashboard?msg=Пользователь+удалён+из+защиты")
+    raise web.HTTPFound("/dashboard?error=Нельзя+удалить+владельца")
 
 async def send_cmd(request):
     await check_auth(request)
@@ -586,7 +587,7 @@ async def send_cmd(request):
     command = data.get("command", "").strip()
     args = data.get("args", "").strip()
     if not command:
-        raise web.HTTPFound("/dashboard")
+        raise web.HTTPFound("/dashboard?error=Команда+не+выбрана")
     if account == "2" and client2:
         client = client2
         acc_name = (await client2.get_me()).first_name or "Аккаунт2"
@@ -594,39 +595,57 @@ async def send_cmd(request):
         client = client1
         acc_name = (await client1.get_me()).first_name or "Аккаунт1"
     target_entity = target if target else 'me'
-    target_name = target_entity if target_entity != 'me' else "Избранное"
+    target_name = target_entity
+    if target_entity == 'me':
+        target_name = "Избранное"
+    else:
+        try:
+            chat = await client.get_entity(target_entity)
+            target_name = chat.title if hasattr(chat, 'title') else (chat.first_name or target_entity)
+        except:
+            target_name = target_entity
+
+    result_msg = None
     try:
         if command == ".mute":
             chat = await client.get_entity(target_entity)
-            if not hasattr(chat, 'broadcast') or not chat.broadcast:
+            if hasattr(chat, 'broadcast') and chat.broadcast:
+                result_msg = "Ошибка: каналы нельзя мутить"
+            else:
                 muted_chats.add(chat.id)
                 save_state()
                 await broadcast_state()
-                log_command(0, f".mute", source="Web", target_id=chat.id, user_name=acc_name, target_name=target_name)
+                log_command(0, ".mute", source="Web", target_id=chat.id, user_name=acc_name, target_name=target_name)
+                result_msg = f"Чат {target_name} заглушен"
         elif command == ".unmute":
             chat = await client.get_entity(target_entity)
             muted_chats.discard(chat.id)
             save_state()
             await broadcast_state()
-            log_command(0, f".unmute", source="Web", target_id=chat.id, user_name=acc_name, target_name=target_name)
+            log_command(0, ".unmute", source="Web", target_id=chat.id, user_name=acc_name, target_name=target_name)
+            result_msg = f"Чат {target_name} размучен"
         elif command == ".spam":
             parts = args.split(maxsplit=1)
             if len(parts) == 2:
                 count = int(parts[0])
                 text = parts[1]
                 if count > 50:
-                    await client.send_message(target_entity, "⚠️ Максимум 50 повторений за раз.")
+                    result_msg = "Ошибка: максимум 50 повторений"
                 else:
                     for _ in range(count):
                         await client.send_message(target_entity, text)
                         await asyncio.sleep(0.4)
                     log_command(0, f".spam {count} {text}", source="Web", user_name=acc_name, target_name=target_name)
+                    result_msg = f"Спам отправлен в {target_name}"
+            else:
+                result_msg = "Ошибка: укажите число и текст (пример: 3 Привет)"
         elif command == ".ping":
             start = time.time()
             msg = await client.send_message(target_entity, "🏓 Пинг...")
             elapsed = (time.time() - start) * 1000
             await msg.edit(f"🏓 Понг! `{elapsed:.1f}ms`")
             log_command(0, ".ping", source="Web", user_name=acc_name, target_name=target_name)
+            result_msg = f"Пинг: {elapsed:.1f}ms"
         elif command == ".purge":
             num = int(args) if args else 10
             if num > 200:
@@ -643,6 +662,7 @@ async def send_cmd(request):
             await asyncio.sleep(3)
             await tmp.delete()
             log_command(0, f".purge {num}", source="Web", user_name=acc_name, target_name=target_name)
+            result_msg = f"Удалено {deleted} сообщений в {target_name}"
         elif command == ".clearall":
             deleted = 0
             async for msg in client.iter_messages(target_entity):
@@ -656,25 +676,26 @@ async def send_cmd(request):
             await asyncio.sleep(3)
             await tmp.delete()
             log_command(0, ".clearall", source="Web", user_name=acc_name, target_name=target_name)
+            result_msg = f"Удалено {deleted} сообщений в {target_name}"
         elif command == ".stats":
             chat = await client.get_entity(target_entity)
             if hasattr(chat, 'broadcast') and chat.broadcast:
-                await client.send_message(target_entity, "❌ Команда недоступна для каналов.")
-                return
-            participants_count = 0
-            try:
-                participants_count = (await client.get_participants(chat, limit=0)).total
-            except:
-                pass
-            text = (
-                f"📊 <b>Статистика чата</b>\n"
-                f"Название: {chat.title}\n"
-                f"ID: {chat.id}\n"
-                f"Тип: {'Супергруппа' if chat.megagroup else 'Группа' if chat.broadcast else 'ЛС'}\n"
-                f"Участников: {participants_count}"
-            )
-            await client.send_message(target_entity, text, parse_mode='html')
-            log_command(0, ".stats", source="Web", user_name=acc_name, target_name=target_name)
+                result_msg = "Ошибка: канал"
+            else:
+                participants_count = 0
+                try:
+                    participants_count = (await client.get_participants(chat, limit=0)).total
+                except:
+                    pass
+                text = (
+                    f"📊 <b>Статистика чата</b>\n"
+                    f"Название: {chat.title}\n"
+                    f"ID: {chat.id}\n"
+                    f"Участников: {participants_count}"
+                )
+                await client.send_message(target_entity, text, parse_mode='html')
+                log_command(0, ".stats", source="Web", user_name=acc_name, target_name=target_name)
+                result_msg = f"Статистика отправлена в {target_name}"
         elif command == ".tr":
             parts = args.split(maxsplit=1)
             if len(parts) == 2:
@@ -682,6 +703,9 @@ async def send_cmd(request):
                 translated = GoogleTranslator(source='auto', target=target_lang).translate(text)
                 await client.send_message(target_entity, f"🌐 Перевод ({target_lang}):\n{translated}")
                 log_command(0, f".tr {target_lang} {text}", source="Web", user_name=acc_name, target_name=target_name)
+                result_msg = f"Перевод отправлен в {target_name}"
+            else:
+                result_msg = "Ошибка: укажите код языка и текст"
         elif command == ".avto":
             if args.startswith("all "):
                 auto_reply_global['enabled'] = True
@@ -689,13 +713,15 @@ async def send_cmd(request):
                 if custom_text:
                     auto_reply_global['text'] = custom_text
                 await client.send_message(target_entity, f"🌐 Глобальный автоответчик включён. Текст: {auto_reply_global['text']}")
+                result_msg = "Глобальный автоответчик включён"
             else:
                 if target_entity == 'me':
-                    await client.send_message(target_entity, "❌ Автоответчик только в ЛС.")
+                    result_msg = "Ошибка: автоответчик только в личных сообщениях"
                 else:
                     custom_text = args if args else "⏳ Привет! Я сейчас не в сети, отвечу позже."
                     auto_reply_chats[target_entity] = {'enabled': True, 'text': custom_text}
                     await client.send_message(target_entity, f"✅ Автоответчик включён. Текст: {custom_text}")
+                    result_msg = f"Автоответчик включён в {target_name}"
             log_command(0, ".avto", source="Web", user_name=acc_name, target_name=target_name)
         elif command == ".help":
             text = (
@@ -715,11 +741,18 @@ async def send_cmd(request):
                 "<b>.help</b> — это сообщение"
             )
             await client.send_message(target_entity, text, parse_mode='html')
+            result_msg = "Справка отправлена"
         else:
-            await client.send_message(target_entity, f"Неизвестная команда: {command}")
+            result_msg = "Неизвестная команда"
     except Exception as e:
         log_command(0, f"ОШИБКА: {command} -> {e}", source="Web", user_name=acc_name, target_name=target_name)
-    raise web.HTTPFound("/dashboard")
+        result_msg = f"Ошибка: {str(e)}"
+
+    if result_msg:
+        redirect_url = f"/dashboard?msg={requests.utils.quote(result_msg)}" if 'requests' in globals() else f"/dashboard?msg={result_msg.replace(' ', '+')}"
+    else:
+        redirect_url = "/dashboard"
+    raise web.HTTPFound(redirect_url)
 
 async def handle_health(request):
     return web.Response(text="OK")
@@ -826,10 +859,14 @@ table { width: 100%; border-collapse: collapse; margin-top: 10px; }
 th, td { border: 1px solid #555; padding: 5px; text-align: left; }
 th { background: #16213e; }
 .filter-bar { margin-bottom: 10px; }
+.notification { padding: 10px; margin-bottom: 15px; border-radius: 5px; display: none; }
+.notification.success { background: #2e7d32; color: white; }
+.notification.error { background: #c62828; color: white; }
 </style>
 </head><body>
 <h1>Userbot Panel <a href="/logout" class="logout" style="color:white;text-decoration:none;padding:5px 10px;border-radius:4px;">Выйти</a></h1>
 <p>Аккаунт 1: <span id="acc1Name">Загрузка...</span><br>Аккаунт 2: <span id="acc2Name">Загрузка...</span></p>
+<div id="notification" class="notification"></div>
 <div class="tabs">
   <div class="tab active" onclick="showTab('muted')">Чаты в муте</div>
   <div class="tab" onclick="showTab('protected')">Защищённые</div>
@@ -896,6 +933,28 @@ let acc1Name = "Аккаунт 1", acc2Name = "Аккаунт 2";
 let showAllHistory = false;
 const MAX_VISIBLE = 20;
 
+function showNotification(text, isError = false) {
+  const notif = document.getElementById('notification');
+  notif.textContent = text;
+  notif.className = 'notification ' + (isError ? 'error' : 'success');
+  notif.style.display = 'block';
+  setTimeout(() => { notif.style.display = 'none'; }, 5000);
+}
+
+// Проверяем параметры URL при загрузке
+window.addEventListener('load', () => {
+  const params = new URLSearchParams(location.search);
+  if (params.has('msg')) {
+    showNotification(params.get('msg'), false);
+    // удаляем параметр, чтобы не показывать повторно при обновлении
+    window.history.replaceState({}, document.title, location.pathname);
+  } else if (params.has('error')) {
+    showNotification(params.get('error'), true);
+    window.history.replaceState({}, document.title, location.pathname);
+  }
+  connectWS();
+});
+
 function connectWS() {
   ws = new WebSocket('wss://' + location.host + '/ws');
   ws.onmessage = function(event) {
@@ -944,7 +1003,7 @@ function updateUI(data) {
 }
 function unmuteChat(chatId) {
   fetch('/unmute?chat_id=' + chatId + '&account=' + document.querySelector('select[name="account"]').value)
-    .then(() => {});
+    .then(() => { location.reload(); });
 }
 function showTab(tab) {
   document.querySelectorAll('.content').forEach(el => el.style.display = 'none');
