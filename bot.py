@@ -4,16 +4,17 @@ import time
 from telethon import TelegramClient, events, Button
 from telethon.sessions import StringSession
 from deep_translator import GoogleTranslator
+from aiohttp import web
 
-# Берём настройки из переменных окружения Render
+# ========== КОНФИГ ИЗ ПЕРЕМЕННЫХ ОКРУЖЕНИЯ ==========
 API_ID = int(os.environ["API_ID"])
 API_HASH = os.environ["API_HASH"]
 SESSION_STRING = os.environ["SESSION_STRING"]
+PORT = int(os.environ.get("PORT", 10000))   # Render предоставляет PORT
 
-# Создаём клиент с готовой сессией (строка)
 client = TelegramClient(StringSession(SESSION_STRING), API_ID, API_HASH)
 
-# Далее весь ваш функционал остаётся прежним
+# ========== ВАШ ФУНКЦИОНАЛ (без изменений) ==========
 muted_chats = set()
 auto_reply_chats = {}
 auto_reply_global = {'enabled': False, 'text': '⏳ Привет! Я сейчас не в сети, отвечу позже.'}
@@ -238,11 +239,32 @@ async def help_cmd(event):
     )
     await client.send_message(event.chat_id, text, parse_mode='html')
 
-# ---------- ЗАПУСК ----------
+# ========== МИНИМАЛЬНЫЙ HTTP‑СЕРВЕР ==========
+async def handle_health(request):
+    return web.Response(text="OK", status=200)
+
+async def run_http_server():
+    app = web.Application()
+    app.router.add_get('/', handle_health)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, '0.0.0.0', PORT)
+    print(f"HTTP сервер запущен на порту {PORT}")
+    await site.start()
+    # Бесконечно ждём (завершится только при выключении)
+    while True:
+        await asyncio.sleep(3600)
+
+# ========== ОДНОВРЕМЕННЫЙ ЗАПУСК ==========
 async def main():
+    # Запускаем Telethon
     await client.start()
-    print("✅ Юзербот запущен на Render!")
-    await client.run_until_disconnected()
+    print("✅ Юзербот запущен!")
+    # Запускаем HTTP‑сервер параллельно
+    await asyncio.gather(
+        client.run_until_disconnected(),  # Telethon работает
+        run_http_server()                # HTTP сервер
+    )
 
 if __name__ == '__main__':
     asyncio.run(main())
