@@ -4,11 +4,14 @@ from datetime import datetime, timedelta
 from telethon import TelegramClient, events, Button
 from telethon.errors import FloodWaitError, ChatAdminRequiredError
 from telethon.sessions import StringSession
-from telethon.tl.types import MessageEntityTextUrl
+from telethon.tl.types import MessageEntityTextUrl, DocumentAttributeAudio
 from deep_translator import GoogleTranslator
-from aiohttp import web, WSMsgType, ClientSession
+from aiohttp import web, WSMsgType, ClientSession, FormData
 import qrcode
 from gtts import gTTS
+import speech_recognition as sr
+from pydub import AudioSegment
+import tempfile
 
 API_ID = int(os.environ["API_ID"])
 API_HASH = os.environ["API_HASH"]
@@ -19,6 +22,7 @@ GUEST_KEY = os.environ.get("GUEST_KEY", "friend123")
 PORT = int(os.environ.get("PORT", 10000))
 ADMIN_USER = os.environ.get("ADMIN_USER", "admin")
 ADMIN_PASS = os.environ.get("ADMIN_PASSWORD", "Anopchenko2011")
+WIT_AI_TOKEN = os.environ.get("WIT_AI_TOKEN", "")
 DATA_FILE = Path("userbot_data.json")
 LOG_FILE = Path("command_history.json")
 WARN_FILE = Path("warns.json")
@@ -464,9 +468,44 @@ def register_handlers(client_instance):
             "<b>.tr код текст</b> — перевод\n"
             "<b>.addfriend</b> / .delfriend / .listfriends\n"
             "<b>.history</b> — история последних команд\n"
+            "<b>.stt</b> — распознать голосовое сообщение (реплай)\n"
             "<b>.help</b> — это сообщение"
         )
         await event.client.send_message(event.chat_id, text, parse_mode='html')
+
+    @client_instance.on(events.NewMessage(outgoing=True, pattern=r'^\.stt$'))
+    async def stt_cmd(event):
+        if not event.reply_to_msg_id:
+            await event.reply("❌ Ответьте на голосовое сообщение.")
+            return
+        reply = await event.get_reply_message()
+        if not reply.voice and not (reply.audio and reply.audio.mime_type in ['audio/ogg', 'audio/mp4']):
+            await event.reply("❌ Это не голосовое сообщение.")
+            return
+        await event.reply("🎙 Распознаю речь...")
+        try:
+            # Скачиваем аудио во временный файл
+            with tempfile.NamedTemporaryFile(suffix='.ogg', delete=False) as tmp:
+                await reply.download_media(tmp.name)
+                ogg_path = tmp.name
+            # Конвертация в WAV через pydub (требует ffmpeg)
+            wav_path = ogg_path.replace('.ogg', '.wav')
+            audio = AudioSegment.from_file(ogg_path, format="ogg")
+            audio.export(wav_path, format="wav")
+            recognizer = sr.Recognizer()
+            with sr.AudioFile(wav_path) as source:
+                audio_data = recognizer.record(source)
+            # Используем Google Web Speech API (бесплатно, без ключа)
+            text = recognizer.recognize_google(audio_data, language="ru-RU")
+            await event.reply(f"📝 Распознанный текст:\n{text}")
+            log_command(event.sender_id, f".stt: {text}", source="Telegram", target_id=event.chat_id)
+        except Exception as e:
+            await event.reply(f"❌ Ошибка распознавания: {e}")
+        finally:
+            if os.path.exists(ogg_path):
+                os.unlink(ogg_path)
+            if os.path.exists(wav_path):
+                os.unlink(wav_path)
 
     # ----- НОВЫЕ КОМАНДЫ -----
     @client_instance.on(events.NewMessage(outgoing=True, pattern=r'^\.qr\s+(.*)'))
@@ -1335,6 +1374,7 @@ async def send_cmd(request):
                 "<b>.tr код текст</b> — перевод\n"
                 "<b>.addfriend</b> / .delfriend / .listfriends\n"
                 "<b>.history</b> — история последних команд\n"
+                "<b>.stt</b> — распознать голосовое сообщение (реплай)\n"
                 "<b>.help</b> — это сообщение"
             )
             await client.send_message(target_entity, text, parse_mode='html')
