@@ -16,13 +16,6 @@ GUEST_KEY = os.environ.get("GUEST_KEY", "friend123")
 PORT = int(os.environ.get("PORT", 10000))
 ADMIN_USER = os.environ.get("ADMIN_USER", "admin")
 ADMIN_PASS = os.environ.get("ADMIN_PASSWORD", "Anopchenko2011")
-AI_API_KEY = os.environ.get("AI_API_KEY", "")
-# Список моделей для перебора, если одна не работает – пробуется следующая
-AI_MODELS = [
-    "meta-llama/llama-3.2-3b-instruct:free",
-    "mistralai/mistral-7b-instruct:free",
-    "qwen/qwen-2.5-7b-instruct:free"
-]
 DATA_FILE = Path("userbot_data.json")
 LOG_FILE = Path("command_history.json")
 
@@ -41,7 +34,7 @@ if BOT_TOKEN:
 
 muted_chats = set()
 auto_reply_chats = {}
-auto_reply_global = {'enabled': False, 'text': '⏳ Привет! Я сейчас не в сети, отвечу позже.', 'ai': False}
+auto_reply_global = {'enabled': False, 'text': '⏳ Привет! Я сейчас не в сети, отвечу позже.'}
 last_replied = {}
 protected_users = set()
 command_history = []
@@ -154,39 +147,6 @@ async def init_protected_users():
     save_state()
     await broadcast_state()
 
-async def ask_ai(prompt: str) -> str:
-    if not AI_API_KEY or not http_session:
-        return "❌ ИИ не настроен (API ключ отсутствует)."
-    headers = {
-        "Authorization": f"Bearer {AI_API_KEY}",
-        "Content-Type": "application/json",
-        "HTTP-Referer": "https://myusersbot.onrender.com",
-        "X-OpenRouter-Title": "MyUsersBot"
-    }
-    last_error = ""
-    for model in AI_MODELS:
-        payload = {
-            "model": model,
-            "messages": [{"role": "user", "content": prompt}],
-            "max_tokens": 200
-        }
-        try:
-            async with http_session.post(
-                "https://openrouter.ai/api/v1/chat/completions",
-                headers=headers,
-                json=payload,
-                timeout=30
-            ) as resp:
-                text = await resp.text()
-                if resp.status == 200:
-                    data = json.loads(text)
-                    return data["choices"][0]["message"]["content"].strip()
-                else:
-                    last_error = f"{model}: {resp.status} – {text[:150]}"
-        except Exception as e:
-            last_error = f"{model}: {e}"
-    return f"❌ Все модели недоступны. Последняя ошибка: {last_error}"
-
 def register_handlers(client_instance):
     @client_instance.on(events.NewMessage(outgoing=True, pattern=r'^\.mute$'))
     async def mute_cmd(event):
@@ -238,13 +198,13 @@ def register_handlers(client_instance):
         await event.edit("🔊 <b>Мут снят.</b>", buttons=None, parse_mode='html')
         await broadcast_state()
 
+    # ---------- АВТООТВЕТЧИК ----------
     @client_instance.on(events.NewMessage(outgoing=True, pattern=r'^\.avto(\s+all)?(?:\s+(.*))?'))
     async def avto_cmd(event):
         is_global = bool(event.pattern_match.group(1))
         custom_text = event.pattern_match.group(2).strip() if event.pattern_match.group(2) else None
         if is_global:
             auto_reply_global['enabled'] = True
-            auto_reply_global['ai'] = False
             if custom_text:
                 auto_reply_global['text'] = custom_text
             await event.delete()
@@ -259,7 +219,7 @@ def register_handlers(client_instance):
                 return
             if custom_text is None:
                 custom_text = "⏳ Привет! Я сейчас не в сети, отвечу позже."
-            auto_reply_chats[event.chat_id] = {'enabled': True, 'text': custom_text, 'ai': False}
+            auto_reply_chats[event.chat_id] = {'enabled': True, 'text': custom_text}
             await event.delete()
             await event.client.send_message(
                 event.chat_id,
@@ -284,41 +244,6 @@ def register_handlers(client_instance):
             await event.delete()
             await event.client.send_message(event.chat_id, "❌ <b>Автоответчик выключен в этом чате.</b>", parse_mode='html')
 
-    @client_instance.on(events.NewMessage(outgoing=True, pattern=r'^\.ai\s+on$'))
-    async def ai_on_cmd(event):
-        chat = await event.get_chat()
-        if hasattr(chat, 'broadcast') and chat.broadcast:
-            await event.reply("❌ В каналах ИИ-автоответчик недоступен.")
-            return
-        chat_id = event.chat_id
-        if chat_id not in auto_reply_chats:
-            auto_reply_chats[chat_id] = {'enabled': True, 'text': '', 'ai': True}
-        else:
-            auto_reply_chats[chat_id]['enabled'] = True
-            auto_reply_chats[chat_id]['ai'] = True
-        await event.reply("🤖 ИИ-автоответчик включён. Я буду отвечать с помощью нейросети.")
-        log_command(event.sender_id, ".ai on", source="Telegram", target_id=chat_id)
-
-    @client_instance.on(events.NewMessage(outgoing=True, pattern=r'^\.ai\s+off$'))
-    async def ai_off_cmd(event):
-        chat_id = event.chat_id
-        if chat_id in auto_reply_chats:
-            auto_reply_chats[chat_id]['ai'] = False
-            if not auto_reply_chats[chat_id].get('text'):
-                auto_reply_chats[chat_id]['enabled'] = False
-        await event.reply("🔇 ИИ-автоответчик выключен.")
-        log_command(event.sender_id, ".ai off", source="Telegram", target_id=chat_id)
-
-    @client_instance.on(events.NewMessage(outgoing=True, pattern=r'^\.ai\s+status$'))
-    async def ai_status_cmd(event):
-        chat_id = event.chat_id
-        info = auto_reply_chats.get(chat_id, {})
-        if info.get('ai'):
-            await event.reply("🤖 ИИ-автоответчик активен.")
-        else:
-            await event.reply("🔇 ИИ-автоответчик выключен.")
-        log_command(event.sender_id, ".ai status", source="Telegram", target_id=chat_id)
-
     @client_instance.on(events.NewMessage(incoming=True))
     async def auto_reply_handler(event):
         if event.out:
@@ -333,26 +258,14 @@ def register_handlers(client_instance):
             return
         chat_settings = auto_reply_chats.get(chat_id)
         if chat_settings and chat_settings.get('enabled'):
-            if chat_settings.get('ai'):
+            reply_text = chat_settings.get('text')
+            if reply_text:
                 if last_replied.get(chat_id) == event.id:
                     return
-                prompt = event.text or ""
-                if not prompt:
-                    return
-                async with event.client.action(chat_id, 'typing'):
-                    ai_response = await ask_ai(prompt)
-                await event.client.send_message(chat_id, ai_response)
+                await asyncio.sleep(1)
+                await event.client.send_message(chat_id, reply_text)
                 last_replied[chat_id] = event.id
-                return
-            else:
-                reply_text = chat_settings.get('text')
-                if reply_text:
-                    if last_replied.get(chat_id) == event.id:
-                        return
-                    await asyncio.sleep(1)
-                    await event.client.send_message(chat_id, reply_text)
-                    last_replied[chat_id] = event.id
-                return
+            return
         if auto_reply_global['enabled']:
             reply_text = auto_reply_global.get('text')
             if reply_text:
@@ -362,6 +275,7 @@ def register_handlers(client_instance):
                 await event.client.send_message(chat_id, reply_text)
                 last_replied[chat_id] = event.id
 
+    # ---------- ОСТАЛЬНЫЕ КОМАНДЫ ----------
     @client_instance.on(events.NewMessage(outgoing=True, pattern=r'^\.spam\s+(\d+)\s+(.*)'))
     async def spam_cmd(event):
         count = int(event.pattern_match.group(1))
@@ -537,8 +451,6 @@ def register_handlers(client_instance):
             "<b>.unmute</b> — снять мут\n"
             "<b>.clearall</b> — удалить все сообщения в чате\n"
             "<b>.avto</b> / .avto all / .unavto — автоответчик\n"
-            "<b>.ai on</b> — включить ИИ-автоответчик\n"
-            "<b>.ai off</b> — выключить ИИ-автоответчик\n"
             "<b>.spam N текст</b> — повторить текст N раз\n"
             "<b>.ping</b> — проверить пинг\n"
             "<b>.purge [N]</b> — удалить свои последние N сообщений\n"
@@ -797,7 +709,6 @@ async def send_cmd(request):
         elif command == ".avto":
             if args.startswith("all "):
                 auto_reply_global['enabled'] = True
-                auto_reply_global['ai'] = False
                 custom_text = args[4:]
                 if custom_text:
                     auto_reply_global['text'] = custom_text
@@ -808,36 +719,10 @@ async def send_cmd(request):
                     result_msg = "Ошибка: автоответчик только в личных сообщениях"
                 else:
                     custom_text = args if args else "⏳ Привет! Я сейчас не в сети, отвечу позже."
-                    auto_reply_chats[target_entity] = {'enabled': True, 'text': custom_text, 'ai': False}
+                    auto_reply_chats[target_entity] = {'enabled': True, 'text': custom_text}
                     await client.send_message(target_entity, f"✅ Автоответчик включён. Текст: {custom_text}")
                     result_msg = f"Автоответчик включён в {target_name}"
             log_command(0, ".avto", source="Web", user_name=acc_name, target_name=target_name)
-        elif command == ".ai on":
-            if target_entity == 'me':
-                result_msg = "Ошибка: ИИ-автоответчик только в чатах"
-            else:
-                chat = await client.get_entity(target_entity)
-                if hasattr(chat, 'broadcast') and chat.broadcast:
-                    result_msg = "Ошибка: канал"
-                else:
-                    if target_entity not in auto_reply_chats:
-                        auto_reply_chats[target_entity] = {'enabled': True, 'text': '', 'ai': True}
-                    else:
-                        auto_reply_chats[target_entity]['enabled'] = True
-                        auto_reply_chats[target_entity]['ai'] = True
-                    await client.send_message(target_entity, "🤖 ИИ-автоответчик включён.")
-                    result_msg = f"ИИ-автоответчик включён в {target_name}"
-            log_command(0, ".ai on", source="Web", user_name=acc_name, target_name=target_name)
-        elif command == ".ai off":
-            if target_entity != 'me' and target_entity in auto_reply_chats:
-                auto_reply_chats[target_entity]['ai'] = False
-                if not auto_reply_chats[target_entity].get('text'):
-                    auto_reply_chats[target_entity]['enabled'] = False
-                await client.send_message(target_entity, "🔇 ИИ-автоответчик выключен.")
-                result_msg = f"ИИ-автоответчик выключен в {target_name}"
-            else:
-                result_msg = "ИИ-автоответчик не был включён"
-            log_command(0, ".ai off", source="Web", user_name=acc_name, target_name=target_name)
         elif command == ".help":
             text = (
                 "📖 <b>Список команд юзербота:</b>\n\n"
@@ -845,8 +730,6 @@ async def send_cmd(request):
                 "<b>.unmute</b> — снять мут\n"
                 "<b>.clearall</b> — удалить все сообщения в чате\n"
                 "<b>.avto</b> / .avto all / .unavto — автоответчик\n"
-                "<b>.ai on</b> — включить ИИ-автоответчик\n"
-                "<b>.ai off</b> — выключить ИИ-автоответчик\n"
                 "<b>.spam N текст</b> — повторить текст N раз\n"
                 "<b>.ping</b> — проверить пинг\n"
                 "<b>.purge [N]</b> — удалить свои последние N сообщений\n"
@@ -1016,8 +899,6 @@ th { background: #16213e; }
       <option value=".stats">.stats</option>
       <option value=".tr">.tr</option>
       <option value=".avto">.avto</option>
-      <option value=".ai on">.ai on</option>
-      <option value=".ai off">.ai off</option>
       <option value=".help">.help</option>
     </select><br><br>
     <label>Аргументы:</label><br>
