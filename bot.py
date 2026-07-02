@@ -456,7 +456,6 @@ def register_handlers(client_instance):
             "<b>.unmute</b> — снять мут\n"
             "<b>.clearall</b> — удалить все сообщения в чате\n"
             "<b>.avto</b> / .avto all / .unavto — автоответчик\n"
-            "<b>.ai on</b> — ИИ автоответчик (недоступен)\n"
             "<b>.spam N текст</b> — повторить N раз\n"
             "<b>.ping</b> — пинг\n"
             "<b>.purge [N]</b> — удалить свои последние N сообщений\n"
@@ -1069,7 +1068,6 @@ if bot:
             auth_tokens.pop(token, None)
             await event.edit("🚫 Вход отклонён.", buttons=None)
 
-# ----- HTTP СЕРВЕР -----
 async def check_auth(request):
     auth = request.headers.get("Authorization")
     if auth and auth.startswith("Basic "):
@@ -1146,10 +1144,16 @@ async def unmute_handler(request):
     account = request.query.get("account", "1")
     if account == "2":
         user_name = (await client2.get_me()).first_name if client2 else "Аккаунт2"
+        client = client2
     else:
         user_name = (await client1.get_me()).first_name or "Аккаунт1"
+        client = client1
     target_name = await resolve_chat_name(chat_id)
     log_command(0, f"Размутил чат {chat_id}", source="Web", target_id=chat_id, user_name=user_name, target_name=target_name)
+    try:
+        await client.send_message(chat_id, "🔊 Администратор размутил этот чат! Берегитесь, он может снова замутить 😈")
+    except:
+        pass
     await broadcast_state()
     raise web.HTTPFound("/dashboard?msg=Чат+размучен")
 
@@ -1212,6 +1216,10 @@ async def send_cmd(request):
             save_state()
             await broadcast_state()
             log_command(0, ".unmute", source="Web", target_id=chat.id, user_name=acc_name, target_name=target_name)
+            try:
+                await client.send_message(target_entity, "🔊 Администратор размутил этот чат! Берегитесь, он может снова замутить 😈")
+            except:
+                pass
             result_msg = f"Чат {target_name} размучен"
         elif command == ".spam":
             parts = args.split(maxsplit=1)
