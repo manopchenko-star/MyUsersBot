@@ -587,9 +587,6 @@ async def send_cmd(request):
     args = data.get("args", "").strip()
     if not command:
         raise web.HTTPFound("/dashboard")
-    full_cmd = command
-    if args:
-        full_cmd = f"{command} {args}"
     if account == "2" and client2:
         client = client2
         acc_name = (await client2.get_me()).first_name or "Аккаунт2"
@@ -597,15 +594,131 @@ async def send_cmd(request):
         client = client1
         acc_name = (await client1.get_me()).first_name or "Аккаунт1"
     target_entity = target if target else 'me'
+    target_name = target_entity if target_entity != 'me' else "Избранное"
     try:
-        await client.send_message(target_entity, full_cmd)
-        target_name = await resolve_chat_name(target_entity) if target_entity != 'me' else "Избранное"
-        me = await client1.get_me()
-        await client1.send_message(me.id, f"📤 Команда из веб-панели:\n{acc_name} → {target_entity}: {full_cmd}")
+        if command == ".mute":
+            chat = await client.get_entity(target_entity)
+            if not hasattr(chat, 'broadcast') or not chat.broadcast:
+                muted_chats.add(chat.id)
+                save_state()
+                await broadcast_state()
+                log_command(0, f".mute", source="Web", target_id=chat.id, user_name=acc_name, target_name=target_name)
+        elif command == ".unmute":
+            chat = await client.get_entity(target_entity)
+            muted_chats.discard(chat.id)
+            save_state()
+            await broadcast_state()
+            log_command(0, f".unmute", source="Web", target_id=chat.id, user_name=acc_name, target_name=target_name)
+        elif command == ".spam":
+            parts = args.split(maxsplit=1)
+            if len(parts) == 2:
+                count = int(parts[0])
+                text = parts[1]
+                if count > 50:
+                    await client.send_message(target_entity, "⚠️ Максимум 50 повторений за раз.")
+                else:
+                    for _ in range(count):
+                        await client.send_message(target_entity, text)
+                        await asyncio.sleep(0.4)
+                    log_command(0, f".spam {count} {text}", source="Web", user_name=acc_name, target_name=target_name)
+        elif command == ".ping":
+            start = time.time()
+            msg = await client.send_message(target_entity, "🏓 Пинг...")
+            elapsed = (time.time() - start) * 1000
+            await msg.edit(f"🏓 Понг! `{elapsed:.1f}ms`")
+            log_command(0, ".ping", source="Web", user_name=acc_name, target_name=target_name)
+        elif command == ".purge":
+            num = int(args) if args else 10
+            if num > 200:
+                num = 200
+            deleted = 0
+            async for message in client.iter_messages(target_entity, from_user='me', limit=num):
+                try:
+                    await message.delete()
+                    deleted += 1
+                    await asyncio.sleep(0.5)
+                except:
+                    pass
+            tmp = await client.send_message(target_entity, f"🗑 Удалено {deleted} сообщений.")
+            await asyncio.sleep(3)
+            await tmp.delete()
+            log_command(0, f".purge {num}", source="Web", user_name=acc_name, target_name=target_name)
+        elif command == ".clearall":
+            deleted = 0
+            async for msg in client.iter_messages(target_entity):
+                try:
+                    await msg.delete()
+                    deleted += 1
+                    await asyncio.sleep(0.5)
+                except:
+                    pass
+            tmp = await client.send_message(target_entity, f"🗑 Удалено {deleted} сообщений.")
+            await asyncio.sleep(3)
+            await tmp.delete()
+            log_command(0, ".clearall", source="Web", user_name=acc_name, target_name=target_name)
+        elif command == ".stats":
+            chat = await client.get_entity(target_entity)
+            if hasattr(chat, 'broadcast') and chat.broadcast:
+                await client.send_message(target_entity, "❌ Команда недоступна для каналов.")
+                return
+            participants_count = 0
+            try:
+                participants_count = (await client.get_participants(chat, limit=0)).total
+            except:
+                pass
+            text = (
+                f"📊 <b>Статистика чата</b>\n"
+                f"Название: {chat.title}\n"
+                f"ID: {chat.id}\n"
+                f"Тип: {'Супергруппа' if chat.megagroup else 'Группа' if chat.broadcast else 'ЛС'}\n"
+                f"Участников: {participants_count}"
+            )
+            await client.send_message(target_entity, text, parse_mode='html')
+            log_command(0, ".stats", source="Web", user_name=acc_name, target_name=target_name)
+        elif command == ".tr":
+            parts = args.split(maxsplit=1)
+            if len(parts) == 2:
+                target_lang, text = parts
+                translated = GoogleTranslator(source='auto', target=target_lang).translate(text)
+                await client.send_message(target_entity, f"🌐 Перевод ({target_lang}):\n{translated}")
+                log_command(0, f".tr {target_lang} {text}", source="Web", user_name=acc_name, target_name=target_name)
+        elif command == ".avto":
+            if args.startswith("all "):
+                auto_reply_global['enabled'] = True
+                custom_text = args[4:]
+                if custom_text:
+                    auto_reply_global['text'] = custom_text
+                await client.send_message(target_entity, f"🌐 Глобальный автоответчик включён. Текст: {auto_reply_global['text']}")
+            else:
+                if target_entity == 'me':
+                    await client.send_message(target_entity, "❌ Автоответчик только в ЛС.")
+                else:
+                    custom_text = args if args else "⏳ Привет! Я сейчас не в сети, отвечу позже."
+                    auto_reply_chats[target_entity] = {'enabled': True, 'text': custom_text}
+                    await client.send_message(target_entity, f"✅ Автоответчик включён. Текст: {custom_text}")
+            log_command(0, ".avto", source="Web", user_name=acc_name, target_name=target_name)
+        elif command == ".help":
+            text = (
+                "📖 <b>Список команд юзербота:</b>\n\n"
+                "<b>.mute</b> — заглушить чат\n"
+                "<b>.unmute</b> — снять мут\n"
+                "<b>.clearall</b> — удалить все сообщения в чате\n"
+                "<b>.avto</b> / .avto all / .unavto — автоответчик\n"
+                "<b>.spam N текст</b> — повторить текст N раз\n"
+                "<b>.ping</b> — проверить пинг\n"
+                "<b>.purge [N]</b> — удалить свои последние N сообщений\n"
+                "<b>.save текст</b> / .get — заметки\n"
+                "<b>.stats</b> — статистика чата\n"
+                "<b>.tr код текст</b> — перевод\n"
+                "<b>.addfriend</b> / .delfriend / .listfriends\n"
+                "<b>.history</b> — история последних команд\n"
+                "<b>.help</b> — это сообщение"
+            )
+            await client.send_message(target_entity, text, parse_mode='html')
+        else:
+            await client.send_message(target_entity, f"Неизвестная команда: {command}")
     except Exception as e:
-        log_command(0, f"ОШИБКА: {full_cmd} -> {e}", source="Web", user_name=acc_name, target_name=target)
-    else:
-        log_command(0, full_cmd, source="Web", user_name=acc_name, target_name=target_name)
+        log_command(0, f"ОШИБКА: {command} -> {e}", source="Web", user_name=acc_name, target_name=target_name)
     raise web.HTTPFound("/dashboard")
 
 async def handle_health(request):
