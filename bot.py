@@ -14,7 +14,7 @@ SESSION_STRING_2 = os.environ.get("SESSION_STRING_FRIEND")
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
 GUEST_KEY = os.environ.get("GUEST_KEY", "friend123")
 PORT = int(os.environ.get("PORT", 10000))
-ADMIN_USER = "admin"
+ADMIN_USER = os.environ.get("ADMIN_USER", "admin")
 ADMIN_PASS = os.environ.get("ADMIN_PASSWORD", "Anopchenko2011")
 DATA_FILE = Path("userbot_data.json")
 LOG_FILE = Path("command_history.json")
@@ -45,10 +45,7 @@ auth_tokens = {}
 ws_clients = set()
 
 def save_state():
-    data = {
-        "muted_chats": list(muted_chats),
-        "protected_users": list(protected_users),
-    }
+    data = {"muted_chats": list(muted_chats), "protected_users": list(protected_users)}
     DATA_FILE.write_text(json.dumps(data), encoding="utf-8")
 
 def load_state():
@@ -657,20 +654,46 @@ async def guest_ws_handler(request):
     return ws
 
 # HTML ШАБЛОНЫ
-HTML_LOGIN = """<html><head><meta charset="utf-8"><title>Вход</title>
+HTML_LOGIN = f"""<html><head><meta charset="utf-8"><title>Вход</title>
 <style>
-body { font-family: 'Segoe UI', sans-serif; background: #1a1a2e; color: #e0e0e0; display: flex; justify-content: center; align-items: center; height: 100vh; }
-form { background: #16213e; padding: 2rem; border-radius: 12px; box-shadow: 0 0 20px rgba(0,0,0,0.5); }
-input { display: block; width: 100%; margin-bottom: 1rem; padding: 0.5rem; border: none; border-radius: 6px; }
-button { background: #0f3460; color: white; border: none; padding: 0.7rem 1.5rem; border-radius: 6px; cursor: pointer; }
-button:hover { background: #e94560; }
+body {{ font-family: 'Segoe UI', sans-serif; background: #1a1a2e; color: #e0e0e0; display: flex; justify-content: center; align-items: center; height: 100vh; }}
+form {{ background: #16213e; padding: 2rem; border-radius: 12px; box-shadow: 0 0 20px rgba(0,0,0,0.5); }}
+input {{ display: block; width: 100%; margin-bottom: 1rem; padding: 0.5rem; border: none; border-radius: 6px; }}
+button {{ background: #0f3460; color: white; border: none; padding: 0.7rem 1.5rem; border-radius: 6px; cursor: pointer; margin-right: 10px; }}
+button:hover {{ background: #e94560; }}
+.bot-login {{ background: #16213e; padding: 2rem; border-radius: 12px; margin-top: 20px; text-align: center; }}
 </style></head><body>
+<div>
 <form action="/auth/login" method="post">
-<h2>Вход</h2>
-Логин: <input type="text" name="username" value="admin"><br>
+<h2>Вход по паролю</h2>
+Логин: <input type="text" name="username" value="{ADMIN_USER}"><br>
 Пароль: <input type="password" name="password"><br>
 <button type="submit">Войти с паролем</button>
 </form>
+<div class="bot-login">
+<button onclick="loginViaBot()">Войти через Telegram бота</button>
+</div>
+</div>
+<script>
+async function loginViaBot() {{
+    const resp = await fetch('/auth/request_bot');
+    const data = await resp.json();
+    if (data.token) {{
+        document.cookie = "auth_token=" + data.token + "; path=/";
+        alert("Запрос отправлен в Telegram. Нажмите 'Принять' в сообщении бота, затем обновите страницу.");
+        const interval = setInterval(async () => {{
+            const check = await fetch('/auth/check_token?token=' + data.token);
+            const status = await check.json();
+            if (status.approved) {{
+                clearInterval(interval);
+                window.location.href = '/dashboard';
+            }}
+        }}, 3000);
+    }} else {{
+        alert("Ошибка: " + data.error);
+    }}
+}}
+</script>
 </body></html>"""
 
 HTML_DASHBOARD = """<html><head><meta charset="utf-8"><title>Userbot Panel</title>
@@ -773,7 +796,6 @@ function updateUI(data) {
   document.getElementById('acc2Name').textContent = data.acc2_name || 'не подключён';
   acc1Name = data.acc1_name || 'Аккаунт 1';
   acc2Name = data.acc2_name;
-  // Обновим селект
   let sel = document.getElementById('accountSelect');
   sel.options[0].text = acc1Name;
   if (acc2Name) {
@@ -781,7 +803,6 @@ function updateUI(data) {
   } else {
     sel.options[1].text = 'Аккаунт 2 (отключён)';
   }
-  // Селект фильтра
   let filter = document.getElementById('accountFilter');
   filter.options[0].text = 'Все';
   filter.options[1].text = acc1Name;
@@ -792,7 +813,6 @@ function updateUI(data) {
   }
 
   fullHistory = data.history || [];
-  // обновляем только если открыта вкладка истории
   if (document.getElementById('history').style.display !== 'none') {
     renderHistory();
   }
