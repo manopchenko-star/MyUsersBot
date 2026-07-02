@@ -3,3 +3,5 @@ deep-translator
 aiohttp
 qrcode[pil]
 gTTS
+pydub
+SpeechRecognition
