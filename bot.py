@@ -154,12 +154,15 @@ async def ask_ai(prompt: str) -> str:
         return "❌ ИИ не настроен (API ключ отсутствует)."
     headers = {
         "Authorization": f"Bearer {AI_API_KEY}",
-        "Content-Type": "application/json"
+        "Content-Type": "application/json",
+        "HTTP-Referer": "https://myusersbot.onrender.com",
+        "X-OpenRouter-Title": "MyUsersBot"
     }
     payload = {
         "model": AI_MODEL,
         "messages": [{"role": "user", "content": prompt}],
-        "max_tokens": 200
+        "max_tokens": 200,
+        "session_id": str(uuid.uuid4())
     }
     try:
         async with http_session.post(
@@ -168,11 +171,12 @@ async def ask_ai(prompt: str) -> str:
             json=payload,
             timeout=30
         ) as resp:
+            text = await resp.text()
             if resp.status == 200:
-                data = await resp.json()
+                data = json.loads(text)
                 return data["choices"][0]["message"]["content"].strip()
             else:
-                return f"❌ Ошибка API: {resp.status}"
+                return f"❌ Ошибка API: {resp.status} – {text[:200]}"
     except Exception as e:
         return f"❌ Ошибка запроса: {e}"
 
