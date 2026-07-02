@@ -17,7 +17,7 @@ PORT = int(os.environ.get("PORT", 10000))
 ADMIN_USER = os.environ.get("ADMIN_USER", "admin")
 ADMIN_PASS = os.environ.get("ADMIN_PASSWORD", "Anopchenko2011")
 AI_API_KEY = os.environ.get("AI_API_KEY", "")
-AI_MODEL = os.environ.get("AI_MODEL", "google/gemini-2.0-flash-lite:free")
+AI_MODEL = os.environ.get("AI_MODEL", "google/gemini-2.0-flash:free")
 DATA_FILE = Path("userbot_data.json")
 LOG_FILE = Path("command_history.json")
 
