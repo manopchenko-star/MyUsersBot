@@ -17,7 +17,12 @@ PORT = int(os.environ.get("PORT", 10000))
 ADMIN_USER = os.environ.get("ADMIN_USER", "admin")
 ADMIN_PASS = os.environ.get("ADMIN_PASSWORD", "Anopchenko2011")
 AI_API_KEY = os.environ.get("AI_API_KEY", "")
-AI_MODEL = os.environ.get("AI_MODEL", "meta-llama/llama-3.2-3b-instruct:free")
+# Список моделей для перебора, если одна не работает – пробуется следующая
+AI_MODELS = [
+    "meta-llama/llama-3.2-3b-instruct:free",
+    "mistralai/mistral-7b-instruct:free",
+    "qwen/qwen-2.5-7b-instruct:free"
+]
 DATA_FILE = Path("userbot_data.json")
 LOG_FILE = Path("command_history.json")
 
@@ -158,26 +163,29 @@ async def ask_ai(prompt: str) -> str:
         "HTTP-Referer": "https://myusersbot.onrender.com",
         "X-OpenRouter-Title": "MyUsersBot"
     }
-    payload = {
-        "model": AI_MODEL,
-        "messages": [{"role": "user", "content": prompt}],
-        "max_tokens": 200
-    }
-    try:
-        async with http_session.post(
-            "https://openrouter.ai/api/v1/chat/completions",
-            headers=headers,
-            json=payload,
-            timeout=30
-        ) as resp:
-            text = await resp.text()
-            if resp.status == 200:
-                data = json.loads(text)
-                return data["choices"][0]["message"]["content"].strip()
-            else:
-                return f"❌ Ошибка API: {resp.status} – {text[:200]}"
-    except Exception as e:
-        return f"❌ Ошибка запроса: {e}"
+    last_error = ""
+    for model in AI_MODELS:
+        payload = {
+            "model": model,
+            "messages": [{"role": "user", "content": prompt}],
+            "max_tokens": 200
+        }
+        try:
+            async with http_session.post(
+                "https://openrouter.ai/api/v1/chat/completions",
+                headers=headers,
+                json=payload,
+                timeout=30
+            ) as resp:
+                text = await resp.text()
+                if resp.status == 200:
+                    data = json.loads(text)
+                    return data["choices"][0]["message"]["content"].strip()
+                else:
+                    last_error = f"{model}: {resp.status} – {text[:150]}"
+        except Exception as e:
+            last_error = f"{model}: {e}"
+    return f"❌ Все модели недоступны. Последняя ошибка: {last_error}"
 
 def register_handlers(client_instance):
     @client_instance.on(events.NewMessage(outgoing=True, pattern=r'^\.mute$'))
