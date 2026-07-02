@@ -17,7 +17,7 @@ PORT = int(os.environ.get("PORT", 10000))
 ADMIN_USER = os.environ.get("ADMIN_USER", "admin")
 ADMIN_PASS = os.environ.get("ADMIN_PASSWORD", "Anopchenko2011")
 AI_API_KEY = os.environ.get("AI_API_KEY", "")
-AI_MODEL = os.environ.get("AI_MODEL", "google/gemini-2.0-flash:free")
+AI_MODEL = os.environ.get("AI_MODEL", "meta-llama/llama-3.2-3b-instruct:free")
 DATA_FILE = Path("userbot_data.json")
 LOG_FILE = Path("command_history.json")
 
@@ -161,8 +161,7 @@ async def ask_ai(prompt: str) -> str:
     payload = {
         "model": AI_MODEL,
         "messages": [{"role": "user", "content": prompt}],
-        "max_tokens": 200,
-        "session_id": str(uuid.uuid4())
+        "max_tokens": 200
     }
     try:
         async with http_session.post(
