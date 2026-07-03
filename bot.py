@@ -22,6 +22,7 @@ GUEST_KEY = os.environ.get("GUEST_KEY", "friend123")
 PORT = int(os.environ.get("PORT", 10000))
 ADMIN_USER = os.environ.get("ADMIN_USER", "admin")
 ADMIN_PASS = os.environ.get("ADMIN_PASSWORD", "Anopchenko2011")
+INVITES_FILE = Path(os.environ.get("INVITES_FILE", "invites.json"))
 DATA_FILE = Path("userbot_data.json")
 LOG_FILE = Path("command_history.json")
 WARN_FILE = Path("warns.json")
@@ -53,6 +54,7 @@ http_session: ClientSession = None
 warns = {}
 afk_users = {}
 reminders = []
+invites = {}
 
 def load_json(path, default):
     if path.exists():
@@ -64,6 +66,13 @@ def load_json(path, default):
 
 def save_json(path, data):
     path.write_text(json.dumps(data, ensure_ascii=False))
+
+def load_invites():
+    global invites
+    invites = load_json(INVITES_FILE, {})
+
+def save_invites():
+    save_json(INVITES_FILE, invites)
 
 def save_state():
     save_json(DATA_FILE, {"muted_chats": list(muted_chats), "protected_users": list(protected_users)})
@@ -77,6 +86,10 @@ def load_state():
 warns = load_json(WARN_FILE, {})
 afk_users = load_json(AFK_FILE, {})
 reminders = load_json(REMIND_FILE, [])
+
+load_invites()
+load_state()
+load_history()
 
 async def resolve_name(user_id):
     try:
@@ -92,7 +105,7 @@ async def resolve_chat_name(chat_id):
     except:
         return str(chat_id)
 
-def log_command(user_id, command, source="Telegram", target_id=None, user_name=None, target_name=None):
+def log_command(user_id, command, source="Telegram", target_id=None, user_name=None, target_name=None, result=None):
     global command_history
     entry = {
         "time": datetime.now().isoformat(),
@@ -101,7 +114,8 @@ def log_command(user_id, command, source="Telegram", target_id=None, user_name=N
         "command": command,
         "source": source,
         "target_id": target_id,
-        "target_name": target_name or (str(target_id) if target_id else "Избранное")
+        "target_name": target_name or (str(target_id) if target_id else "Избранное"),
+        "result": result
     }
     command_history.append(entry)
     if len(command_history) > 50:
@@ -118,6 +132,7 @@ async def broadcast_state():
         "user_names": await get_user_names(),
         "acc1_name": (await client1.get_me()).first_name or "Аккаунт 1",
         "acc2_name": (await client2.get_me()).first_name if client2 else None,
+        "invites": invites
     }
     msg = json.dumps(data, default=str, ensure_ascii=False)
     for ws in list(ws_clients):
@@ -142,7 +157,6 @@ def load_history():
     global command_history
     command_history = load_json(LOG_FILE, [])
 
-load_state()
 load_history()
 
 async def init_protected_users():
@@ -168,7 +182,7 @@ def register_handlers(client_instance):
         await event.delete()
         user_name = await resolve_name(event.sender_id)
         target_name = await resolve_chat_name(event.chat_id)
-        log_command(event.sender_id, ".mute", source="Telegram", target_id=event.chat_id, user_name=user_name, target_name=target_name)
+        log_command(event.sender_id, ".mute", source="Telegram", target_id=event.chat_id, user_name=user_name, target_name=target_name, result="ok")
         text = (
             "🔇 <b>Пользователь заглушен</b>\n"
             "Все его сообщения будут <i>мгновенно удаляться</i>.\n\n"
@@ -185,7 +199,7 @@ def register_handlers(client_instance):
         await event.delete()
         user_name = await resolve_name(event.sender_id)
         target_name = await resolve_chat_name(event.chat_id)
-        log_command(event.sender_id, ".unmute", source="Telegram", target_id=event.chat_id, user_name=user_name, target_name=target_name)
+        log_command(event.sender_id, ".unmute", source="Telegram", target_id=event.chat_id, user_name=user_name, target_name=target_name, result="ok")
         await event.client.send_message(event.chat_id, "🔊 <b>Мут снят.</b> Сообщения больше не удаляются.", parse_mode='html')
         await broadcast_state()
 
@@ -204,10 +218,11 @@ def register_handlers(client_instance):
         save_state()
         user_name = await resolve_name(event.sender_id)
         target_name = await resolve_chat_name(event.chat_id)
-        log_command(event.sender_id, "Размутил (кнопка)", source="Telegram", target_id=event.chat_id, user_name=user_name, target_name=target_name)
+        log_command(event.sender_id, "Размутил (кнопка)", source="Telegram", target_id=event.chat_id, user_name=user_name, target_name=target_name, result="ok")
         await event.edit("🔊 <b>Мут снят.</b>", buttons=None, parse_mode='html')
         await broadcast_state()
 
+    # ---------- АВТООТВЕТЧИК ----------
     @client_instance.on(events.NewMessage(outgoing=True, pattern=r'^\.avto(\s+all)?(?:\s+(.*))?'))
     async def avto_cmd(event):
         is_global = bool(event.pattern_match.group(1))
@@ -284,6 +299,7 @@ def register_handlers(client_instance):
                 await event.client.send_message(chat_id, reply_text)
                 last_replied[chat_id] = event.id
 
+    # ---------- ОСТАЛЬНЫЕ КОМАНДЫ ----------
     @client_instance.on(events.NewMessage(outgoing=True, pattern=r'^\.spam\s+(\d+)\s+(.*)'))
     async def spam_cmd(event):
         count = int(event.pattern_match.group(1))
@@ -291,7 +307,7 @@ def register_handlers(client_instance):
         await event.delete()
         user_name = await resolve_name(event.sender_id)
         target_name = await resolve_chat_name(event.chat_id)
-        log_command(event.sender_id, f".spam {count} {text}", source="Telegram", target_id=event.chat_id, user_name=user_name, target_name=target_name)
+        log_command(event.sender_id, f".spam {count} {text}", source="Telegram", target_id=event.chat_id, user_name=user_name, target_name=target_name, result="ok")
         if count > 50:
             await event.client.send_message(event.chat_id, "⚠️ Максимум 50 повторений за раз.")
             return
@@ -314,7 +330,7 @@ def register_handlers(client_instance):
         await event.delete()
         user_name = await resolve_name(event.sender_id)
         target_name = await resolve_chat_name(event.chat_id)
-        log_command(event.sender_id, f".purge {num}", source="Telegram", target_id=event.chat_id, user_name=user_name, target_name=target_name)
+        log_command(event.sender_id, f".purge {num}", source="Telegram", target_id=event.chat_id, user_name=user_name, target_name=target_name, result="ok")
         deleted = 0
         async for message in event.client.iter_messages(event.chat_id, from_user='me', limit=num):
             try:
@@ -423,7 +439,7 @@ def register_handlers(client_instance):
         await event.delete()
         user_name = await resolve_name(event.sender_id)
         target_name = await resolve_chat_name(event.chat_id)
-        log_command(event.sender_id, ".clearall", source="Telegram", target_id=event.chat_id, user_name=user_name, target_name=target_name)
+        log_command(event.sender_id, ".clearall", source="Telegram", target_id=event.chat_id, user_name=user_name, target_name=target_name, result="ok")
         chat = await event.get_chat()
         if hasattr(chat, 'broadcast') and chat.broadcast:
             await event.reply("❌ В канале невозможно очистить сообщения.")
@@ -468,42 +484,48 @@ def register_handlers(client_instance):
             "<b>.addfriend</b> / .delfriend / .listfriends\n"
             "<b>.history</b> — история последних команд\n"
             "<b>.stt</b> — распознать голосовое сообщение (реплай)\n"
+            "<b>.qr текст</b> — QR-код\n"
+            "<b>.weather город</b> — погода\n"
+            "<b>.cat</b> / .dog — котик/собака\n"
+            "<b>.joke</b> / .fact — шутка/факт\n"
+            "<b>.password [длина]</b> — сгенерировать пароль\n"
+            "<b>.uuid</b> — UUID\n"
+            "<b>.reverse текст</b> — переворот\n"
+            "<b>.mock текст</b> — иЗдЁвКа\n"
+            "<b>.calc выражение</b> — калькулятор\n"
+            "<b>.id / .myid / .chatid</b> — ID\n"
+            "<b>.info @user</b> — информация\n"
+            "<b>.afk причина</b> / .unafk\n"
+            "<b>.remind 10m текст</b> — напоминание\n"
+            "<b>.timer 5m</b> — таймер\n"
+            "<b>.roll</b> / .coin / .choose\n"
+            "<b>.shrug / .lenny / .tableflip</b>\n"
+            "<b>.bmi вес рост</b> — ИМТ\n"
+            "<b>.convert сумма из в</b> — валюта\n"
+            "<b>.time</b> — дата и время\n"
+            "<b>.pin / .unpin / .del / .edit</b>\n"
+            "<b>.link / .forward @user / .quote</b>\n"
+            "<b>.chatinfo / .membercount</b>\n"
+            "<b>.warn @user / .unwarn / .warns</b>\n"
+            "<b>.ban @user / .unban / .kick</b>\n"
+            "<b>.muteuser @user 10m / .unmuteuser</b>\n"
+            "<b>.autoread on/off</b>\n"
+            "<b>.pomodoro 25 / .stopwatch</b>\n"
+            "<b>.slug текст</b>\n"
+            "<b>.upper / .lower / .count</b>\n"
+            "<b>.base64 encode/decode текст</b>\n"
+            "<b>.yesno / .when</b>\n"
+            "<b>.polls вопрос | вар1 | вар2</b>\n"
+            "<b>.tts текст</b> — голосовое сообщение\n"
+            "<b>.sticker</b> — случайный стикер\n"
+            "<b>.schedule 10s .ping</b> — отложенная команда\n"
+            "<b>.json</b> (реплай)\n"
+            "<b>.shorten url</b>\n"
             "<b>.help</b> — это сообщение"
         )
         await event.client.send_message(event.chat_id, text, parse_mode='html')
 
-    @client_instance.on(events.NewMessage(outgoing=True, pattern=r'^\.stt$'))
-    async def stt_cmd(event):
-        if not event.reply_to_msg_id:
-            await event.reply("❌ Ответьте на голосовое сообщение.")
-            return
-        reply = await event.get_reply_message()
-        if not reply.voice and not (reply.audio and reply.audio.mime_type in ['audio/ogg', 'audio/mp4']):
-            await event.reply("❌ Это не голосовое сообщение.")
-            return
-        await event.reply("🎙 Распознаю речь...")
-        try:
-            with tempfile.NamedTemporaryFile(suffix='.ogg', delete=False) as tmp:
-                await reply.download_media(tmp.name)
-                ogg_path = tmp.name
-            wav_path = ogg_path.replace('.ogg', '.wav')
-            audio = AudioSegment.from_file(ogg_path, format="ogg")
-            audio.export(wav_path, format="wav")
-            recognizer = sr.Recognizer()
-            with sr.AudioFile(wav_path) as source:
-                audio_data = recognizer.record(source)
-            text = recognizer.recognize_google(audio_data, language="ru-RU")
-            await event.reply(f"📝 Распознанный текст:\n{text}")
-            log_command(event.sender_id, f".stt: {text}", source="Telegram", target_id=event.chat_id)
-        except Exception as e:
-            await event.reply(f"❌ Ошибка распознавания: {e}")
-        finally:
-            if os.path.exists(ogg_path):
-                os.unlink(ogg_path)
-            if os.path.exists(wav_path):
-                os.unlink(wav_path)
-
-    # ----- ОСТАЛЬНЫЕ КОМАНДЫ (полный набор) -----
+    # ----- НОВЫЕ КОМАНДЫ (все, что были ранее) -----
     @client_instance.on(events.NewMessage(outgoing=True, pattern=r'^\.qr\s+(.*)'))
     async def qr_cmd(event):
         text = event.pattern_match.group(1)
@@ -1044,14 +1066,6 @@ def register_handlers(client_instance):
     async def topmembers_cmd(event):
         await event.reply("📊 Функция в разработке.")
 
-    @client_instance.on(events.NewMessage(outgoing=True, pattern=r'^\.report$'))
-    async def report_cmd(event):
-        if event.reply_to_msg_id:
-            await (await event.get_reply_message()).report()
-            await event.reply("✅ Жалоба отправлена.")
-        else:
-            await event.reply("❌ Ответьте на сообщение.")
-
     @client_instance.on(events.NewMessage(outgoing=True, pattern=r'^\.json$'))
     async def json_cmd(event):
         if event.reply_to_msg_id:
@@ -1069,6 +1083,37 @@ def register_handlers(client_instance):
                 await event.reply(short)
         except:
             await event.reply("❌ Не удалось сократить ссылку.")
+
+    @client_instance.on(events.NewMessage(outgoing=True, pattern=r'^\.stt$'))
+    async def stt_cmd(event):
+        if not event.reply_to_msg_id:
+            await event.reply("❌ Ответьте на голосовое сообщение.")
+            return
+        reply = await event.get_reply_message()
+        if not reply.voice and not (reply.audio and reply.audio.mime_type in ['audio/ogg', 'audio/mp4']):
+            await event.reply("❌ Это не голосовое сообщение.")
+            return
+        await event.reply("🎙 Распознаю речь...")
+        try:
+            with tempfile.NamedTemporaryFile(suffix='.ogg', delete=False) as tmp:
+                await reply.download_media(tmp.name)
+                ogg_path = tmp.name
+            wav_path = ogg_path.replace('.ogg', '.wav')
+            audio = AudioSegment.from_file(ogg_path, format="ogg")
+            audio.export(wav_path, format="wav")
+            recognizer = sr.Recognizer()
+            with sr.AudioFile(wav_path) as source:
+                audio_data = recognizer.record(source)
+            text = recognizer.recognize_google(audio_data, language="ru-RU")
+            await event.reply(f"📝 Распознанный текст:\n{text}")
+            log_command(event.sender_id, f".stt: {text}", source="Telegram", target_id=event.chat_id, result="ok")
+        except Exception as e:
+            await event.reply(f"❌ Ошибка распознавания: {e}")
+        finally:
+            if os.path.exists(ogg_path):
+                os.unlink(ogg_path)
+            if os.path.exists(wav_path):
+                os.unlink(wav_path)
 
     # AFK авто‑ответ
     @client_instance.on(events.NewMessage(incoming=True))
@@ -1103,6 +1148,7 @@ if bot:
             auth_tokens.pop(token, None)
             await event.edit("🚫 Вход отклонён.", buttons=None)
 
+# ----- HTTP СЕРВЕР -----
 async def check_auth(request):
     auth = request.headers.get("Authorization")
     if auth and auth.startswith("Basic "):
@@ -1112,6 +1158,9 @@ async def check_auth(request):
             return
     token = request.cookies.get("auth_token")
     if token and auth_tokens.get(token) == True:
+        return
+    invite_token = request.cookies.get("invite_token")
+    if invite_token and invite_token in invites:
         return
     raise web.HTTPUnauthorized(headers={"WWW-Authenticate": "Basic realm=\"Userbot Panel\""})
 
@@ -1141,6 +1190,7 @@ async def auth_login(request):
 async def logout(request):
     resp = web.HTTPFound("/login")
     resp.del_cookie("auth_token")
+    resp.del_cookie("invite_token")
     return resp
 
 async def request_bot_auth(request):
@@ -1171,6 +1221,25 @@ async def check_token(request):
         return web.json_response({"approved": approved})
     return web.json_response({"approved": False})
 
+async def create_invite(request):
+    await check_auth(request)
+    data = await request.post()
+    role = data.get("role", "readonly")
+    key = str(uuid.uuid4())[:8]
+    invites[key] = {"role": role, "created": datetime.now().isoformat()}
+    save_invites()
+    await broadcast_state()
+    raise web.HTTPFound("/dashboard?msg=Инвайт+создан")
+
+async def delete_invite(request):
+    await check_auth(request)
+    key = request.query.get("key", "")
+    if key in invites:
+        del invites[key]
+        save_invites()
+        await broadcast_state()
+    raise web.HTTPFound("/dashboard?msg=Инвайт+удалён")
+
 async def unmute_handler(request):
     await check_auth(request)
     chat_id = int(request.query["chat_id"])
@@ -1184,7 +1253,7 @@ async def unmute_handler(request):
         user_name = (await client1.get_me()).first_name or "Аккаунт1"
         client = client1
     target_name = await resolve_chat_name(chat_id)
-    log_command(0, f"Размутил чат {chat_id}", source="Web", target_id=chat_id, user_name=user_name, target_name=target_name)
+    log_command(0, f"Размутил чат {chat_id}", source="Web", target_id=chat_id, user_name=user_name, target_name=target_name, result="ok")
     try:
         await client.send_message(chat_id, "🔊 Администратор размутил этот чат! Берегитесь, он может снова замутить 😈")
     except:
@@ -1202,7 +1271,7 @@ async def remove_protected(request):
         save_state()
         user_name = await resolve_name(me1.id)
         target_name = await resolve_name(user_id)
-        log_command(me1.id, f"Удалил из защиты {user_id}", source="Web", target_id=user_id, user_name=user_name, target_name=target_name)
+        log_command(me1.id, f"Удалил из защиты {user_id}", source="Web", target_id=user_id, user_name=user_name, target_name=target_name, result="ok")
         await broadcast_state()
         raise web.HTTPFound("/dashboard?msg=Пользователь+удалён+из+защиты")
     raise web.HTTPFound("/dashboard?error=Нельзя+удалить+владельца")
@@ -1243,14 +1312,14 @@ async def send_cmd(request):
                 muted_chats.add(chat.id)
                 save_state()
                 await broadcast_state()
-                log_command(0, ".mute", source="Web", target_id=chat.id, user_name=acc_name, target_name=target_name)
+                log_command(0, ".mute", source="Web", target_id=chat.id, user_name=acc_name, target_name=target_name, result="ok")
                 result_msg = f"Чат {target_name} заглушен"
         elif command == ".unmute":
             chat = await client.get_entity(target_entity)
             muted_chats.discard(chat.id)
             save_state()
             await broadcast_state()
-            log_command(0, ".unmute", source="Web", target_id=chat.id, user_name=acc_name, target_name=target_name)
+            log_command(0, ".unmute", source="Web", target_id=chat.id, user_name=acc_name, target_name=target_name, result="ok")
             try:
                 await client.send_message(target_entity, "🔊 Администратор размутил этот чат! Берегитесь, он может снова замутить 😈")
             except:
@@ -1267,7 +1336,7 @@ async def send_cmd(request):
                     for _ in range(count):
                         await client.send_message(target_entity, text)
                         await asyncio.sleep(0.4)
-                    log_command(0, f".spam {count} {text}", source="Web", user_name=acc_name, target_name=target_name)
+                    log_command(0, f".spam {count} {text}", source="Web", user_name=acc_name, target_name=target_name, result="ok")
                     result_msg = f"Спам отправлен в {target_name}"
             else:
                 result_msg = "Ошибка: укажите число и текст (пример: 3 Привет)"
@@ -1276,7 +1345,7 @@ async def send_cmd(request):
             msg = await client.send_message(target_entity, "🏓 Пинг...")
             elapsed = (time.time() - start) * 1000
             await msg.edit(f"🏓 Понг! `{elapsed:.1f}ms`")
-            log_command(0, ".ping", source="Web", user_name=acc_name, target_name=target_name)
+            log_command(0, ".ping", source="Web", user_name=acc_name, target_name=target_name, result="ok")
             result_msg = f"Пинг: {elapsed:.1f}ms"
         elif command == ".purge":
             num = int(args) if args else 10
@@ -1293,7 +1362,7 @@ async def send_cmd(request):
             tmp = await client.send_message(target_entity, f"🗑 Удалено {deleted} сообщений.")
             await asyncio.sleep(3)
             await tmp.delete()
-            log_command(0, f".purge {num}", source="Web", user_name=acc_name, target_name=target_name)
+            log_command(0, f".purge {num}", source="Web", user_name=acc_name, target_name=target_name, result="ok")
             result_msg = f"Удалено {deleted} сообщений в {target_name}"
         elif command == ".clearall":
             deleted = 0
@@ -1307,7 +1376,7 @@ async def send_cmd(request):
             tmp = await client.send_message(target_entity, f"🗑 Удалено {deleted} сообщений.")
             await asyncio.sleep(3)
             await tmp.delete()
-            log_command(0, ".clearall", source="Web", user_name=acc_name, target_name=target_name)
+            log_command(0, ".clearall", source="Web", user_name=acc_name, target_name=target_name, result="ok")
             result_msg = f"Удалено {deleted} сообщений в {target_name}"
         elif command == ".stats":
             chat = await client.get_entity(target_entity)
@@ -1326,7 +1395,7 @@ async def send_cmd(request):
                     f"Участников: {participants_count}"
                 )
                 await client.send_message(target_entity, text, parse_mode='html')
-                log_command(0, ".stats", source="Web", user_name=acc_name, target_name=target_name)
+                log_command(0, ".stats", source="Web", user_name=acc_name, target_name=target_name, result="ok")
                 result_msg = f"Статистика отправлена в {target_name}"
         elif command == ".tr":
             parts = args.split(maxsplit=1)
@@ -1334,7 +1403,7 @@ async def send_cmd(request):
                 target_lang, text = parts
                 translated = GoogleTranslator(source='auto', target=target_lang).translate(text)
                 await client.send_message(target_entity, f"🌐 Перевод ({target_lang}):\n{translated}")
-                log_command(0, f".tr {target_lang} {text}", source="Web", user_name=acc_name, target_name=target_name)
+                log_command(0, f".tr {target_lang} {text}", source="Web", user_name=acc_name, target_name=target_name, result="ok")
                 result_msg = f"Перевод отправлен в {target_name}"
             else:
                 result_msg = "Ошибка: укажите код языка и текст"
@@ -1354,7 +1423,7 @@ async def send_cmd(request):
                     auto_reply_chats[target_entity] = {'enabled': True, 'text': custom_text}
                     await client.send_message(target_entity, f"✅ Автоответчик включён. Текст: {custom_text}")
                     result_msg = f"Автоответчик включён в {target_name}"
-            log_command(0, ".avto", source="Web", user_name=acc_name, target_name=target_name)
+            log_command(0, ".avto", source="Web", user_name=acc_name, target_name=target_name, result="ok")
         elif command == ".help":
             text = (
                 "📖 <b>Список команд юзербота:</b>\n\n"
@@ -1378,7 +1447,7 @@ async def send_cmd(request):
         else:
             result_msg = "Неизвестная команда"
     except Exception as e:
-        log_command(0, f"ОШИБКА: {command} -> {e}", source="Web", user_name=acc_name, target_name=target_name)
+        log_command(0, f"ОШИБКА: {command} -> {e}", source="Web", user_name=acc_name, target_name=target_name, result=f"error: {e}")
         result_msg = f"Ошибка: {str(e)}"
 
     if result_msg:
@@ -1392,7 +1461,12 @@ async def handle_health(request):
 
 async def websocket_handler(request):
     token = request.cookies.get("auth_token")
-    if not token or (token != "password_ok" and auth_tokens.get(token) != True):
+    invite_token = request.cookies.get("invite_token")
+    if not token and not invite_token:
+        return web.Response(status=401)
+    if token and token != "password_ok" and auth_tokens.get(token) != True:
+        return web.Response(status=401)
+    if invite_token and invite_token not in invites:
         return web.Response(status=401)
     ws = web.WebSocketResponse()
     await ws.prepare(request)
@@ -1405,6 +1479,7 @@ async def websocket_handler(request):
         "user_names": await get_user_names(),
         "acc1_name": (await client1.get_me()).first_name or "Аккаунт 1",
         "acc2_name": (await client2.get_me()).first_name if client2 else None,
+        "invites": invites
     }
     await ws.send_str(json.dumps(initial, default=str, ensure_ascii=False))
     try:
@@ -1472,218 +1547,247 @@ async function loginViaBot() {{
 </script>
 </body></html>"""
 
-HTML_DASHBOARD = """<html><head><meta charset="utf-8"><title>Userbot Panel</title>
-<style>
-body { font-family: 'Segoe UI', sans-serif; background: #1a1a2e; color: #e0e0e0; margin: 0; padding: 20px; }
-.tabs { display: flex; gap: 10px; margin-bottom: 20px; }
-.tab { background: #16213e; padding: 10px 20px; border-radius: 8px; cursor: pointer; }
-.tab.active { background: #e94560; }
-.content { background: #0f3460; padding: 20px; border-radius: 12px; margin-bottom: 20px; }
-button { background: #e94560; color: white; border: none; padding: 5px 15px; border-radius: 6px; cursor: pointer; }
-button:hover { opacity: 0.8; }
-select, input { padding: 5px; border-radius: 4px; border: none; }
-ul { list-style: none; padding: 0; }
-li { margin: 8px 0; }
-.logout { float: right; background: #333; }
-table { width: 100%; border-collapse: collapse; margin-top: 10px; }
-th, td { border: 1px solid #555; padding: 5px; text-align: left; }
-th { background: #16213e; }
-.filter-bar { margin-bottom: 10px; }
-.notification { padding: 10px; margin-bottom: 15px; border-radius: 5px; display: none; }
-.notification.success { background: #2e7d32; color: white; }
-.notification.error { background: #c62828; color: white; }
-</style>
-</head><body>
-<h1>Userbot Panel <a href="/logout" class="logout" style="color:white;text-decoration:none;padding:5px 10px;border-radius:4px;">Выйти</a></h1>
-<p>Аккаунт 1: <span id="acc1Name">Загрузка...</span><br>Аккаунт 2: <span id="acc2Name">Загрузка...</span></p>
-<div id="notification" class="notification"></div>
-<div class="tabs">
-  <div class="tab active" onclick="showTab('muted')">Чаты в муте</div>
-  <div class="tab" onclick="showTab('protected')">Защищённые</div>
-  <div class="tab" onclick="showTab('commands')">Команды</div>
-  <div class="tab" onclick="showTab('history')">История</div>
-</div>
-<div id="muted" class="content">
-  <h2>Чаты в муте</h2>
-  <ul id="mutedList"></ul>
-</div>
-<div id="protected" class="content" style="display:none">
-  <h2>Защищённые пользователи</h2>
-  <ul id="protectedList"></ul>
-</div>
-<div id="commands" class="content" style="display:none">
-  <h2>Выполнить команду</h2>
-  <form action="/send_cmd" method="post">
-    <label>Аккаунт:</label>
-    <select name="account" id="accountSelect">
-      <option value="1">Аккаунт 1</option>
-      <option value="2">Аккаунт 2</option>
-    </select><br><br>
-    <label>Чат (username или ID, пусто = Избранное):</label><br>
-    <input type="text" name="target" placeholder="например, @durov или -123456" style="width:300px"><br><br>
-    <label>Команда:</label>
-    <select name="command" id="cmdSelect" onchange="updateArgsPlaceholder()">
-      <option value=".mute">.mute</option>
-      <option value=".unmute">.unmute</option>
-      <option value=".spam">.spam</option>
-      <option value=".ping">.ping</option>
-      <option value=".purge">.purge</option>
-      <option value=".clearall">.clearall</option>
-      <option value=".stats">.stats</option>
-      <option value=".tr">.tr</option>
-      <option value=".avto">.avto</option>
-      <option value=".help">.help</option>
-    </select><br><br>
-    <label>Аргументы:</label><br>
-    <input type="text" name="args" id="argsInput" placeholder="например, 3 Привет" style="width:300px"><br><br>
-    <button type="submit">Отправить</button>
-  </form>
-</div>
-<div id="history" class="content" style="display:none">
-  <h2>История команд</h2>
-  <div class="filter-bar">
-    <label>Фильтр по аккаунту: </label>
-    <select id="accountFilter" onchange="renderHistory()">
-      <option value="all">Все</option>
-      <option value="acc1">Аккаунт 1</option>
-      <option value="acc2">Аккаунт 2</option>
-    </select>
-    <button onclick="toggleAllHistory()">Показать все</button>
+HTML_DASHBOARD = """<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Userbot Panel</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+  <style>
+    body { background: #1a1a2e; color: #e0e0e0; font-family: 'Segoe UI', sans-serif; }
+    .navbar { background: #16213e; }
+    .nav-tabs .nav-link { color: #e0e0e0; border: none; }
+    .nav-tabs .nav-link.active { background: #e94560; color: white; border-radius: 8px 8px 0 0; }
+    .tab-content { background: #0f3460; padding: 20px; border-radius: 0 0 12px 12px; }
+    .card { background: #16213e; border: none; margin-bottom: 1rem; }
+    .card-header { background: #0f3460; }
+    .btn-custom { background: #e94560; color: white; }
+    .btn-custom:hover { opacity: 0.8; }
+    .badge { font-size: 0.9rem; }
+    .notification { position: fixed; top: 20px; right: 20px; z-index: 999; }
+  </style>
+</head>
+<body>
+  <nav class="navbar navbar-expand-lg">
+    <div class="container-fluid">
+      <a class="navbar-brand text-white" href="#">Userbot Panel</a>
+      <div class="d-flex">
+        <span class="navbar-text me-3">Акк1: <span id="acc1Name"></span></span>
+        <span class="navbar-text me-3">Акк2: <span id="acc2Name"></span></span>
+        <a href="/logout" class="btn btn-sm btn-outline-light">Выйти</a>
+      </div>
+    </div>
+  </nav>
+  <div class="container mt-3">
+    <div id="notification" class="notification alert d-none"></div>
+    <ul class="nav nav-tabs" id="mainTab" role="tablist">
+      <li class="nav-item" role="presentation"><button class="nav-link active" data-bs-toggle="tab" data-bs-target="#muted" type="button">Чаты в муте</button></li>
+      <li class="nav-item" role="presentation"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#protected">Защищённые</button></li>
+      <li class="nav-item" role="presentation"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#commands">Команды</button></li>
+      <li class="nav-item" role="presentation"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#history">История</button></li>
+      <li class="nav-item" role="presentation"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#invites">Приглашения</button></li>
+    </ul>
+    <div class="tab-content">
+      <div class="tab-pane fade show active" id="muted">
+        <h5>Заглушенные чаты</h5>
+        <div id="mutedList" class="list-group"></div>
+      </div>
+      <div class="tab-pane fade" id="protected">
+        <h5>Защищённые пользователи</h5>
+        <div id="protectedList" class="list-group"></div>
+      </div>
+      <div class="tab-pane fade" id="commands">
+        <h5>Выполнить команду</h5>
+        <form action="/send_cmd" method="post" class="row g-3">
+          <div class="col-md-4">
+            <label>Аккаунт</label>
+            <select name="account" id="accountSelect" class="form-select"></select>
+          </div>
+          <div class="col-md-4">
+            <label>Чат</label>
+            <input type="text" name="target" class="form-control" placeholder="@user или ID">
+          </div>
+          <div class="col-md-4">
+            <label>Команда</label>
+            <select name="command" id="cmdSelect" class="form-select" onchange="updateArgsPlaceholder()">
+              <option value=".mute">.mute</option><option value=".unmute">.unmute</option>
+              <option value=".spam">.spam</option><option value=".ping">.ping</option>
+              <option value=".purge">.purge</option><option value=".clearall">.clearall</option>
+              <option value=".stats">.stats</option><option value=".tr">.tr</option>
+              <option value=".avto">.avto</option><option value=".help">.help</option>
+            </select>
+          </div>
+          <div class="col-md-8">
+            <label>Аргументы</label>
+            <input type="text" name="args" id="argsInput" class="form-control" placeholder="например, 3 Привет">
+          </div>
+          <div class="col-md-4">
+            <button type="submit" class="btn btn-custom mt-4">Отправить</button>
+          </div>
+        </form>
+      </div>
+      <div class="tab-pane fade" id="history">
+        <h5>История действий</h5>
+        <div class="mb-2">
+          <label>Фильтр по аккаунту:</label>
+          <select id="accountFilter" class="form-select w-auto d-inline" onchange="renderHistory()">
+            <option value="all">Все</option>
+            <option value="acc1">Аккаунт 1</option>
+            <option value="acc2">Аккаунт 2</option>
+          </select>
+          <button class="btn btn-sm btn-custom ms-2" onclick="toggleAllHistory()">Показать все</button>
+        </div>
+        <div class="table-responsive">
+          <table class="table table-dark table-striped">
+            <thead><tr><th>Время</th><th>Источник</th><th>Пользователь</th><th>Команда</th><th>Цель</th><th>Результат</th></tr></thead>
+            <tbody id="historyBody"></tbody>
+          </table>
+        </div>
+      </div>
+      <div class="tab-pane fade" id="invites">
+        <h5>Приглашения</h5>
+        <form action="/create_invite" method="post" class="mb-3">
+          <div class="row g-2 align-items-end">
+            <div class="col-auto">
+              <select name="role" class="form-select">
+                <option value="readonly">Только чтение</option>
+                <option value="admin">Администратор</option>
+              </select>
+            </div>
+            <div class="col-auto">
+              <button type="submit" class="btn btn-custom">Создать приглашение</button>
+            </div>
+          </div>
+        </form>
+        <div id="invitesList" class="list-group"></div>
+      </div>
+    </div>
   </div>
-  <table>
-    <thead><tr><th>Время</th><th>Источник</th><th>Пользователь</th><th>Команда</th><th>Цель</th></tr></thead>
-    <tbody id="historyBody"></tbody>
-  </table>
-</div>
+  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+  <script>
+    let ws;
+    let fullHistory = [];
+    let acc1Name = "Аккаунт 1", acc2Name = "Аккаунт 2";
+    let showAllHistory = false;
+    const MAX_VISIBLE = 20;
 
-<script>
-let ws;
-let fullHistory = [];
-let acc1Name = "Аккаунт 1", acc2Name = "Аккаунт 2";
-let showAllHistory = false;
-const MAX_VISIBLE = 20;
+    function showNotification(text, isError = false) {
+      const notif = document.getElementById('notification');
+      notif.textContent = text;
+      notif.className = 'notification alert ' + (isError ? 'alert-danger' : 'alert-success');
+      notif.classList.remove('d-none');
+      setTimeout(() => notif.classList.add('d-none'), 5000);
+    }
 
-function showNotification(text, isError = false) {
-  const notif = document.getElementById('notification');
-  notif.textContent = text;
-  notif.className = 'notification ' + (isError ? 'error' : 'success');
-  notif.style.display = 'block';
-  setTimeout(() => { notif.style.display = 'none'; }, 5000);
-}
+    window.addEventListener('load', () => {
+      const params = new URLSearchParams(location.search);
+      if (params.has('msg')) {
+        showNotification(params.get('msg'), false);
+        window.history.replaceState({}, document.title, location.pathname);
+      } else if (params.has('error')) {
+        showNotification(params.get('error'), true);
+        window.history.replaceState({}, document.title, location.pathname);
+      }
+      connectWS();
+    });
 
-window.addEventListener('load', () => {
-  const params = new URLSearchParams(location.search);
-  if (params.has('msg')) {
-    showNotification(params.get('msg'), false);
-    window.history.replaceState({}, document.title, location.pathname);
-  } else if (params.has('error')) {
-    showNotification(params.get('error'), true);
-    window.history.replaceState({}, document.title, location.pathname);
-  }
-  connectWS();
-});
+    function connectWS() {
+      ws = new WebSocket('wss://' + location.host + '/ws');
+      ws.onmessage = function(event) {
+        const data = JSON.parse(event.data);
+        updateUI(data);
+      };
+      ws.onclose = function() { setTimeout(connectWS, 3000); };
+    }
 
-function connectWS() {
-  ws = new WebSocket('wss://' + location.host + '/ws');
-  ws.onmessage = function(event) {
-    const data = JSON.parse(event.data);
-    updateUI(data);
-  };
-  ws.onclose = function() { setTimeout(connectWS, 3000); };
-}
-function updateUI(data) {
-  document.getElementById('acc1Name').textContent = data.acc1_name || 'Аккаунт 1';
-  document.getElementById('acc2Name').textContent = data.acc2_name || 'не подключён';
-  acc1Name = data.acc1_name || 'Аккаунт 1';
-  acc2Name = data.acc2_name;
-  let sel = document.getElementById('accountSelect');
-  sel.options[0].text = acc1Name;
-  if (acc2Name) {
-    sel.options[1].text = acc2Name;
-  } else {
-    sel.options[1].text = 'Аккаунт 2 (отключён)';
-  }
-  let filter = document.getElementById('accountFilter');
-  filter.options[0].text = 'Все';
-  filter.options[1].text = acc1Name;
-  if (acc2Name) {
-    filter.options[2].text = acc2Name;
-  } else {
-    filter.options[2].text = 'Аккаунт 2 (нет)';
-  }
+    function updateUI(data) {
+      document.getElementById('acc1Name').textContent = data.acc1_name || 'Аккаунт 1';
+      document.getElementById('acc2Name').textContent = data.acc2_name || 'не подключён';
+      acc1Name = data.acc1_name || 'Аккаунт 1';
+      acc2Name = data.acc2_name;
 
-  fullHistory = data.history || [];
-  if (document.getElementById('history').style.display !== 'none') {
-    renderHistory();
-  }
+      let sel = document.getElementById('accountSelect');
+      sel.innerHTML = '';
+      sel.add(new Option(acc1Name, '1'));
+      if (acc2Name) sel.add(new Option(acc2Name, '2'));
 
-  let mutedHtml = '';
-  for (let id in data.chat_names) {
-    mutedHtml += `<li>${data.chat_names[id]} <button onclick="unmuteChat(${id})">Размутить</button></li>`;
-  }
-  document.getElementById('mutedList').innerHTML = mutedHtml || '<li>Пусто</li>';
+      let filter = document.getElementById('accountFilter');
+      filter.options[0].text = 'Все';
+      filter.options[1].text = acc1Name;
+      if (acc2Name) filter.options[2].text = acc2Name;
 
-  let protectedHtml = '';
-  for (let id in data.user_names) {
-    protectedHtml += `<li>${data.user_names[id]}</li>`;
-  }
-  document.getElementById('protectedList').innerHTML = protectedHtml || '<li>Пусто</li>';
-}
-function unmuteChat(chatId) {
-  fetch('/unmute?chat_id=' + chatId + '&account=' + document.querySelector('select[name="account"]').value)
-    .then(() => { location.reload(); });
-}
-function showTab(tab) {
-  document.querySelectorAll('.content').forEach(el => el.style.display = 'none');
-  document.getElementById(tab).style.display = 'block';
-  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
-  event.target.classList.add('active');
-  if (tab === 'history') renderHistory();
-}
-function renderHistory() {
-  const filter = document.getElementById('accountFilter').value;
-  let filtered = fullHistory;
-  if (filter === 'acc1') {
-    filtered = fullHistory.filter(e => e.user_name === acc1Name);
-  } else if (filter === 'acc2') {
-    filtered = fullHistory.filter(e => e.user_name === acc2Name);
-  }
-  if (!showAllHistory) {
-    filtered = filtered.slice(-MAX_VISIBLE);
-  }
-  const tbody = document.getElementById('historyBody');
-  let html = '';
-  filtered.forEach(e => {
-    html += `<tr>
-      <td>${e.time.substr(11,8)}</td>
-      <td>${e.source}</td>
-      <td>${e.user_name}</td>
-      <td>${e.command}</td>
-      <td>${e.target_name || ''}</td>
-    </tr>`;
-  });
-  tbody.innerHTML = html || '<tr><td colspan="5">Нет записей</td></tr>';
-}
-function toggleAllHistory() {
-  showAllHistory = !showAllHistory;
-  document.querySelector('#history .filter-bar button').textContent = showAllHistory ? 'Показать последние 20' : 'Показать все';
-  renderHistory();
-}
-function updateArgsPlaceholder() {
-  const cmd = document.getElementById('cmdSelect').value;
-  const inp = document.getElementById('argsInput');
-  switch(cmd) {
-    case '.spam': inp.placeholder = 'число текст'; break;
-    case '.purge': inp.placeholder = 'число (по умолч. 10)'; break;
-    case '.tr': inp.placeholder = 'код_языка текст'; break;
-    case '.avto': inp.placeholder = 'текст или all текст'; break;
-    default: inp.placeholder = ''; break;
-  }
-}
-connectWS();
-updateArgsPlaceholder();
-</script>
-</body></html>"""
+      fullHistory = data.history || [];
+      renderHistory();
+
+      let mutedHtml = '';
+      for (let id in data.chat_names) {
+        mutedHtml += `<a class="list-group-item list-group-item-dark d-flex justify-content-between">${data.chat_names[id]} <button class="btn btn-sm btn-custom" onclick="unmuteChat(${id})">Размутить</button></a>`;
+      }
+      document.getElementById('mutedList').innerHTML = mutedHtml || 'Нет чатов в муте';
+
+      let protectedHtml = '';
+      for (let id in data.user_names) {
+        protectedHtml += `<span class="list-group-item list-group-item-dark">${data.user_names[id]}</span>`;
+      }
+      document.getElementById('protectedList').innerHTML = protectedHtml || 'Нет защищённых';
+
+      let invitesHtml = '';
+      for (let key in data.invites) {
+        const inv = data.invites[key];
+        const role = inv.role === 'admin' ? 'Админ' : 'Чтение';
+        invitesHtml += `<div class="list-group-item list-group-item-dark d-flex justify-content-between">Ключ: ${key} (${role}) <div><a href="/delete_invite?key=${key}" class="btn btn-sm btn-danger">Удалить</a></div></div>`;
+      }
+      document.getElementById('invitesList').innerHTML = invitesHtml || 'Нет приглашений';
+    }
+
+    function unmuteChat(chatId) {
+      fetch('/unmute?chat_id=' + chatId + '&account=' + document.querySelector('select[name="account"]').value)
+        .then(() => { location.reload(); });
+    }
+
+    function renderHistory() {
+      const filter = document.getElementById('accountFilter').value;
+      let filtered = fullHistory;
+      if (filter === 'acc1') filtered = fullHistory.filter(e => e.user_name === acc1Name);
+      else if (filter === 'acc2') filtered = fullHistory.filter(e => e.user_name === acc2Name);
+      if (!showAllHistory) filtered = filtered.slice(-MAX_VISIBLE);
+      let html = '';
+      filtered.forEach(e => {
+        html += `<tr>
+          <td>${e.time.substr(11,8)}</td>
+          <td>${e.source}</td>
+          <td>${e.user_name}</td>
+          <td>${e.command}</td>
+          <td>${e.target_name || ''}</td>
+          <td><span class="badge ${e.result === 'ok' ? 'bg-success' : 'bg-danger'}">${e.result || ''}</span></td>
+        </tr>`;
+      });
+      document.getElementById('historyBody').innerHTML = html || '<tr><td colspan="6">Нет записей</td></tr>';
+    }
+
+    function toggleAllHistory() {
+      showAllHistory = !showAllHistory;
+      document.querySelector('#history button').textContent = showAllHistory ? 'Показать последние 20' : 'Показать все';
+      renderHistory();
+    }
+
+    function updateArgsPlaceholder() {
+      const cmd = document.getElementById('cmdSelect').value;
+      const inp = document.getElementById('argsInput');
+      switch(cmd) {
+        case '.spam': inp.placeholder = 'число текст'; break;
+        case '.purge': inp.placeholder = 'число (по умолч. 10)'; break;
+        case '.tr': inp.placeholder = 'код_языка текст'; break;
+        case '.avto': inp.placeholder = 'текст или all текст'; break;
+        default: inp.placeholder = ''; break;
+      }
+    }
+
+    updateArgsPlaceholder();
+  </script>
+</body>
+</html>"""
 
 HTML_GUEST = """<html><head><meta charset="utf-8"><title>Гостевой просмотр</title>
 <style>body { font-family: 'Segoe UI', sans-serif; background: #1a1a2e; color: #e0e0e0; padding: 20px; }
@@ -1696,13 +1800,9 @@ let ws = new WebSocket('wss://' + location.host + '/guest-ws?key=' + (new URL(lo
 ws.onmessage = function(event) {
   const data = JSON.parse(event.data);
   let html = '<h3>Чаты в муте:</h3><ul>';
-  for (let id in data.chat_names) {
-    html += '<li>' + data.chat_names[id] + '</li>';
-  }
+  for (let id in data.chat_names) { html += '<li>' + data.chat_names[id] + '</li>'; }
   html += '</ul><h3>Защищённые:</h3><ul>';
-  for (let id in data.user_names) {
-    html += '<li>' + data.user_names[id] + '</li>';
-  }
+  for (let id in data.user_names) { html += '<li>' + data.user_names[id] + '</li>'; }
   html += '</ul><h3>История:</h3><table border="1" cellpadding="4"><tr><th>Время</th><th>Источник</th><th>Пользователь</th><th>Команда</th><th>Цель</th></tr>';
   data.history.forEach(e => {
     html += `<tr><td>${e.time.substr(11,8)}</td><td>${e.source}</td><td>${e.user_name}</td><td>${e.command}</td><td>${e.target_name||''}</td></tr>`;
@@ -1725,6 +1825,8 @@ app.router.add_get("/guest", guest_view)
 app.router.add_get("/unmute", unmute_handler)
 app.router.add_get("/remove_protected", remove_protected)
 app.router.add_post("/send_cmd", send_cmd)
+app.router.add_post("/create_invite", create_invite)
+app.router.add_get("/delete_invite", delete_invite)
 app.router.add_get("/ws", websocket_handler)
 app.router.add_get("/guest-ws", guest_ws_handler)
 
