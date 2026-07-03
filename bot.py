@@ -83,10 +83,13 @@ def load_state():
     muted_chats = set(data.get("muted_chats", []))
     protected_users = set(data.get("protected_users", []))
 
+def load_history():
+    global command_history
+    command_history = load_json(LOG_FILE, [])
+
 warns = load_json(WARN_FILE, {})
 afk_users = load_json(AFK_FILE, {})
 reminders = load_json(REMIND_FILE, [])
-
 load_invites()
 load_state()
 load_history()
@@ -153,12 +156,6 @@ async def get_user_names():
         names[str(uid)] = await resolve_name(uid)
     return names
 
-def load_history():
-    global command_history
-    command_history = load_json(LOG_FILE, [])
-
-load_history()
-
 async def init_protected_users():
     me1 = await client1.get_me()
     protected_users.add(me1.id)
@@ -222,7 +219,6 @@ def register_handlers(client_instance):
         await event.edit("🔊 <b>Мут снят.</b>", buttons=None, parse_mode='html')
         await broadcast_state()
 
-    # ---------- АВТООТВЕТЧИК ----------
     @client_instance.on(events.NewMessage(outgoing=True, pattern=r'^\.avto(\s+all)?(?:\s+(.*))?'))
     async def avto_cmd(event):
         is_global = bool(event.pattern_match.group(1))
@@ -299,7 +295,6 @@ def register_handlers(client_instance):
                 await event.client.send_message(chat_id, reply_text)
                 last_replied[chat_id] = event.id
 
-    # ---------- ОСТАЛЬНЫЕ КОМАНДЫ ----------
     @client_instance.on(events.NewMessage(outgoing=True, pattern=r'^\.spam\s+(\d+)\s+(.*)'))
     async def spam_cmd(event):
         count = int(event.pattern_match.group(1))
@@ -525,7 +520,6 @@ def register_handlers(client_instance):
         )
         await event.client.send_message(event.chat_id, text, parse_mode='html')
 
-    # ----- НОВЫЕ КОМАНДЫ (все, что были ранее) -----
     @client_instance.on(events.NewMessage(outgoing=True, pattern=r'^\.qr\s+(.*)'))
     async def qr_cmd(event):
         text = event.pattern_match.group(1)
@@ -716,7 +710,7 @@ def register_handlers(client_instance):
         await event.reply(f"{user.first_name} — {rating}/10")
 
     @client_instance.on(events.NewMessage(outgoing=True, pattern=r'^\.shrug$'))
-    async def shrug_cmd(event): await event.reply("¯\_(ツ)_/¯")
+    async def shrug_cmd(event): await event.reply(r"¯\_(ツ)_/¯")
     @client_instance.on(events.NewMessage(outgoing=True, pattern=r'^\.lenny$'))
     async def lenny_cmd(event): await event.reply("( ͡° ͜ʖ ͡°)")
     @client_instance.on(events.NewMessage(outgoing=True, pattern=r'^\.tableflip$'))
