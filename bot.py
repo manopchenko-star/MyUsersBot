@@ -63,8 +63,7 @@ def load_admins():
     if not admins: admins = {ADMIN_USER: {"password": hash_password(ADMIN_PASS), "role": "admin"}}; save_json(ADMINS_FILE, admins)
 def save_admins(): save_json(ADMINS_FILE, admins)
 
-def load_invites():
-    global invites; invites = load_json(INVITES_FILE, {})
+def load_invites(): global invites; invites = load_json(INVITES_FILE, {})
 def save_invites(): save_json(INVITES_FILE, invites)
 
 def save_state(): save_json(DATA_FILE, {"muted_chats": list(muted_chats), "protected_users": list(protected_users)})
@@ -73,8 +72,7 @@ def load_state():
     data = load_json(DATA_FILE, {"muted_chats": [], "protected_users": []})
     muted_chats = set(data.get("muted_chats", [])); protected_users = set(data.get("protected_users", []))
 
-def load_history():
-    global command_history; command_history = load_json(LOG_FILE, [])
+def load_history(): global command_history; command_history = load_json(LOG_FILE, [])
 
 load_admins(); load_invites(); load_state(); load_history()
 
@@ -124,7 +122,7 @@ async def init_protected_users():
         except Exception as e: print(f"⚠️ Не удалось получить данные второго аккаунта: {e}")
     save_state(); await broadcast_state()
 
-# ========== ОБРАБОТЧИКИ КОМАНД (только нужные) ==========
+# ========== ОБРАБОТЧИКИ КОМАНД ==========
 def register_handlers(client_instance):
     @client_instance.on(events.NewMessage(outgoing=True, pattern=r'^\.mute$'))
     async def mute_cmd(event):
@@ -626,7 +624,6 @@ HTML_DASHBOARD = """<!DOCTYPE html>
 
     function toggleAllHistory() { showAllHistory=!showAllHistory; document.querySelector('#history button').textContent = showAllHistory ? 'Последние 20' : 'Показать все'; renderHistory(); }
 
-    // Вкладки
     document.querySelectorAll('.tabs button').forEach(btn => btn.addEventListener('click', function() {
       document.querySelectorAll('.tabs button').forEach(b => b.classList.remove('active'));
       this.classList.add('active');
@@ -658,7 +655,7 @@ ws.onmessage = function(event) {
 </script>
 </body></html>"""
 
-# ========== HTTP ОБРАБОТЧИКИ ==========
+# ========== ВЕБ-СЕРВЕР ОБРАБОТЧИКИ ==========
 async def check_auth(request):
     auth = request.headers.get("Authorization")
     if auth and auth.startswith("Basic "):
