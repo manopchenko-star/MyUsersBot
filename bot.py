@@ -417,19 +417,23 @@ if bot:
         elif data.startswith("reject:"):
             token = data.split(":")[1]; auth_tokens.pop(token, None); await event.edit("🚫 Вход отклонён.", buttons=None)
 
-# ========== СТИЛЬНЫЙ САЙТ ==========
+# ========== СТИЛЬНЫЙ САЙТ С ЭФФЕКТАМИ ==========
 HTML_LOGIN = f"""<html><head><meta charset="utf-8"><title>Вход</title>
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Montserrat:wght@300;600&display=swap');
 * {{ box-sizing: border-box; }}
-body {{ margin: 0; height: 100vh; display: flex; align-items: center; justify-content: center; background: #0a0a0a; font-family: 'Montserrat', sans-serif; }}
-.card {{ background: rgba(20,20,30,0.9); backdrop-filter: blur(10px); border: 1px solid rgba(255,255,255,0.1); border-radius: 16px; padding: 2rem; width: 320px; box-shadow: 0 0 30px rgba(233,69,96,0.2); }}
-h2 {{ color: #e94560; text-align: center; font-weight: 600; margin-top: 0; }}
-input {{ width: 100%; padding: 0.7rem; margin: 0.5rem 0; border: none; border-radius: 8px; background: #1a1a2e; color: #e0e0e0; font-size: 1rem; }}
-button {{ width: 100%; padding: 0.7rem; margin-top: 1rem; border: none; border-radius: 8px; background: #e94560; color: white; font-weight: 600; cursor: pointer; transition: 0.3s; }}
-button:hover {{ background: #c93750; transform: scale(1.02); }}
+body {{ margin: 0; height: 100vh; display: flex; align-items: center; justify-content: center; background: linear-gradient(45deg, #0a0a0a, #1a1a2e, #0a0a0a); background-size: 400% 400%; animation: gradientBG 10s ease infinite; font-family: 'Montserrat', sans-serif; }}
+@keyframes gradientBG {{ 0%{{background-position:0% 50%}} 50%{{background-position:100% 50%}} 100%{{background-position:0% 50%}} }}
+.card {{ background: rgba(20,20,30,0.9); backdrop-filter: blur(10px); border: 1px solid rgba(233,69,96,0.3); border-radius: 16px; padding: 2rem; width: 320px; box-shadow: 0 0 30px rgba(233,69,96,0.3), 0 0 60px rgba(233,69,96,0.1); animation: pulse 2s infinite; }}
+@keyframes pulse {{ 0% {{ box-shadow: 0 0 30px rgba(233,69,96,0.3); }} 50% {{ box-shadow: 0 0 50px rgba(233,69,96,0.6); }} 100% {{ box-shadow: 0 0 30px rgba(233,69,96,0.3); }} }}
+h2 {{ color: #e94560; text-align: center; font-weight: 600; margin-top: 0; text-shadow: 0 0 10px rgba(233,69,96,0.5); }}
+input {{ width: 100%; padding: 0.7rem; margin: 0.5rem 0; border: none; border-radius: 8px; background: #1a1a2e; color: #e0e0e0; font-size: 1rem; border: 1px solid rgba(233,69,96,0.2); transition: 0.3s; }}
+input:focus {{ border-color: #e94560; box-shadow: 0 0 10px rgba(233,69,96,0.5); outline: none; }}
+button {{ width: 100%; padding: 0.7rem; margin-top: 1rem; border: none; border-radius: 8px; background: #e94560; color: white; font-weight: 600; cursor: pointer; transition: 0.3s; box-shadow: 0 0 15px rgba(233,69,96,0.4); }}
+button:hover {{ background: #c93750; transform: scale(1.02); box-shadow: 0 0 25px rgba(233,69,96,0.6); }}
 .bot-login {{ margin-top: 1.5rem; text-align: center; }}
-.bot-login button {{ background: #1a1a2e; border: 1px solid #e94560; }}
+.bot-login button {{ background: transparent; border: 1px solid #e94560; box-shadow: none; }}
+.bot-login button:hover {{ background: rgba(233,69,96,0.1); }}
 </style></head><body>
 <div class="card">
 <form action="/auth/login" method="post">
@@ -448,12 +452,11 @@ async function loginViaBot() {{
     const data = await resp.json();
     if (data.token) {{
         document.cookie = "auth_token=" + data.token + "; path=/";
-        alert("Запрос отправлен. Нажмите 'Принять' в боте.");
         const interval = setInterval(async () => {{
             const check = await fetch('/auth/check_token?token=' + data.token);
             if ((await check.json()).approved) {{ clearInterval(interval); window.location.href = '/dashboard'; }}
         }}, 3000);
-    }} else alert("Ошибка: " + data.error);
+    }}
 }}
 </script>
 </body></html>"""
@@ -468,29 +471,35 @@ HTML_DASHBOARD = """<!DOCTYPE html>
   <style>
     @import url('https://fonts.googleapis.com/css2?family=Montserrat:wght@300;400;600&display=swap');
     * { box-sizing: border-box; }
-    body { margin: 0; background: #0a0a0a; color: #e0e0e0; font-family: 'Montserrat', sans-serif; }
-    .navbar { display: flex; align-items: center; justify-content: space-between; background: #13131f; padding: 0.8rem 2rem; border-bottom: 1px solid rgba(233,69,96,0.3); }
-    .navbar-brand { font-size: 1.5rem; font-weight: 600; color: #e94560; text-decoration: none; }
+    body { margin: 0; background: linear-gradient(135deg, #0a0a0a, #1a1a2e, #0a0a0a); background-size: 400% 400%; animation: gradientBG 15s ease infinite; color: #e0e0e0; font-family: 'Montserrat', sans-serif; }
+    @keyframes gradientBG { 0%{background-position:0% 50%} 50%{background-position:100% 50%} 100%{background-position:0% 50%} }
+    .navbar { display: flex; align-items: center; justify-content: space-between; background: rgba(19,19,31,0.9); backdrop-filter: blur(10px); padding: 0.8rem 2rem; border-bottom: 1px solid rgba(233,69,96,0.3); box-shadow: 0 0 20px rgba(233,69,96,0.2); }
+    .navbar-brand { font-size: 1.5rem; font-weight: 600; color: #e94560; text-decoration: none; text-shadow: 0 0 10px rgba(233,69,96,0.5); }
     .nav-info { display: flex; gap: 1.5rem; align-items: center; }
     .nav-info span { opacity: 0.8; }
-    .logout-btn { background: rgba(233,69,96,0.2); padding: 0.4rem 0.8rem; border-radius: 6px; color: #e94560; text-decoration: none; font-size: 0.9rem; }
-    .tabs { display: flex; gap: 0.5rem; padding: 1rem 2rem; background: #13131f; border-bottom: 1px solid rgba(255,255,255,0.05); overflow-x: auto; }
+    .logout-btn { background: rgba(233,69,96,0.2); padding: 0.4rem 0.8rem; border-radius: 6px; color: #e94560; text-decoration: none; font-size: 0.9rem; transition: 0.3s; }
+    .logout-btn:hover { background: rgba(233,69,96,0.4); box-shadow: 0 0 10px rgba(233,69,96,0.3); }
+    .tabs { display: flex; gap: 0.5rem; padding: 1rem 2rem; background: rgba(19,19,31,0.8); border-bottom: 1px solid rgba(255,255,255,0.05); overflow-x: auto; }
     .tabs button { background: transparent; color: #aaa; border: none; padding: 0.5rem 1rem; border-radius: 8px; font-size: 0.9rem; cursor: pointer; transition: 0.2s; }
-    .tabs button.active { background: #e94560; color: white; }
+    .tabs button.active { background: #e94560; color: white; box-shadow: 0 0 15px rgba(233,69,96,0.5); }
+    .tabs button:hover:not(.active) { color: #e94560; }
     .content { padding: 2rem; }
     .tab-pane { display: none; }
     .tab-pane.active { display: block; }
-    .list-group-item { background: #13131f; border: 1px solid rgba(255,255,255,0.05); border-radius: 8px; padding: 0.7rem 1rem; margin-bottom: 0.5rem; display: flex; justify-content: space-between; align-items: center; }
-    .btn-custom { background: #e94560; color: white; border: none; padding: 0.4rem 0.8rem; border-radius: 6px; cursor: pointer; font-size: 0.8rem; }
-    .btn-custom:hover { background: #c93750; }
+    .list-group-item { background: rgba(19,19,31,0.8); border: 1px solid rgba(255,255,255,0.05); border-radius: 8px; padding: 0.7rem 1rem; margin-bottom: 0.5rem; display: flex; justify-content: space-between; align-items: center; transition: 0.3s; }
+    .list-group-item:hover { border-color: rgba(233,69,96,0.3); box-shadow: 0 0 10px rgba(233,69,96,0.2); }
+    .btn-custom { background: #e94560; color: white; border: none; padding: 0.4rem 0.8rem; border-radius: 6px; cursor: pointer; font-size: 0.8rem; transition: 0.3s; box-shadow: 0 0 10px rgba(233,69,96,0.3); }
+    .btn-custom:hover { background: #c93750; box-shadow: 0 0 15px rgba(233,69,96,0.5); }
     table { width: 100%; border-collapse: collapse; margin-top: 1rem; }
     th, td { padding: 0.6rem; border-bottom: 1px solid rgba(255,255,255,0.05); text-align: left; }
     th { color: #e94560; font-weight: 600; }
     .badge { padding: 0.2rem 0.5rem; border-radius: 4px; font-size: 0.75rem; }
     .badge-ok { background: #238636; }
     .badge-error { background: #da3633; }
-    .notification { position: fixed; top: 1rem; right: 1rem; background: #238636; color: white; padding: 0.8rem 1.2rem; border-radius: 8px; display: none; z-index: 999; }
-    .notification.error { background: #da3633; }
+    .notification { position: fixed; top: 1rem; right: 1rem; background: #238636; color: white; padding: 0.8rem 1.2rem; border-radius: 8px; display: none; z-index: 999; box-shadow: 0 0 15px rgba(35,134,54,0.4); }
+    .notification.error { background: #da3633; box-shadow: 0 0 15px rgba(218,54,51,0.4); }
+    input, select { background: #13131f; color: white; border: 1px solid #30363d; border-radius: 6px; padding: 0.5rem; transition: 0.3s; }
+    input:focus, select:focus { border-color: #e94560; box-shadow: 0 0 10px rgba(233,69,96,0.3); outline: none; }
     @media (max-width: 768px) { .tabs { flex-wrap: nowrap; } }
   </style>
 </head>
@@ -499,8 +508,6 @@ HTML_DASHBOARD = """<!DOCTYPE html>
     <a class="navbar-brand" href="#">🤖 Userbot Panel</a>
     <div class="nav-info">
       <span><i class="far fa-user"></i> {user}</span>
-      <span>Акк1: <span id="acc1Name">—</span></span>
-      <span>Акк2: <span id="acc2Name">—</span></span>
       <a href="/logout" class="logout-btn"><i class="fas fa-sign-out-alt"></i></a>
     </div>
   </nav>
@@ -517,18 +524,18 @@ HTML_DASHBOARD = """<!DOCTYPE html>
     <div id="protected" class="tab-pane"><div id="protectedList"></div></div>
     <div id="commands" class="tab-pane">
       <form action="/send_cmd" method="post" style="display: grid; gap: 0.8rem; max-width: 500px;">
-        <select name="account" id="accountSelect" style="padding:0.5rem; background:#13131f; color:white; border:1px solid #30363d; border-radius:6px;"></select>
-        <input name="target" placeholder="Чат (username или ID, пусто = Избранное)" style="padding:0.5rem; background:#13131f; color:white; border:1px solid #30363d; border-radius:6px;">
-        <select name="command" id="cmdSelect" style="padding:0.5rem; background:#13131f; color:white; border:1px solid #30363d; border-radius:6px;">
+        <select name="account" id="accountSelect"></select>
+        <input name="target" placeholder="Чат (username или ID, пусто = Избранное)">
+        <select name="command" id="cmdSelect">
           <option value=".mute">.mute</option><option value=".unmute">.unmute</option><option value=".spam">.spam</option><option value=".ping">.ping</option><option value=".purge">.purge</option><option value=".clearall">.clearall</option><option value=".stats">.stats</option><option value=".tr">.tr</option><option value=".avto">.avto</option><option value=".help">.help</option>
         </select>
-        <input name="args" placeholder="Аргументы" style="padding:0.5rem; background:#13131f; color:white; border:1px solid #30363d; border-radius:6px;">
+        <input name="args" placeholder="Аргументы">
         <button type="submit" class="btn-custom" style="padding:0.6rem;">Отправить</button>
       </form>
     </div>
     <div id="history" class="tab-pane">
       <div style="margin-bottom:0.5rem;">
-        <select id="accountFilter" style="padding:0.3rem; background:#13131f; color:white; border:1px solid #30363d; border-radius:4px;">
+        <select id="accountFilter">
           <option value="all">Все</option><option value="acc1">Акк1</option><option value="acc2">Акк2</option>
         </select>
         <button class="btn-custom" onclick="toggleAllHistory()">Показать все</button>
@@ -537,16 +544,16 @@ HTML_DASHBOARD = """<!DOCTYPE html>
     </div>
     <div id="admins" class="tab-pane">
       <form action="/add_admin" method="post" style="display:flex; gap:0.5rem; margin-bottom:1rem;">
-        <input name="username" placeholder="Логин" required style="flex:1; padding:0.5rem; background:#13131f; color:white; border:1px solid #30363d; border-radius:6px;">
-        <input name="password" type="password" placeholder="Пароль" required style="flex:1; padding:0.5rem; background:#13131f; color:white; border:1px solid #30363d; border-radius:6px;">
-        <select name="role" style="padding:0.5rem; background:#13131f; color:white; border:1px solid #30363d; border-radius:6px;"><option value="admin">Админ</option><option value="readonly">Чтение</option></select>
+        <input name="username" placeholder="Логин" required>
+        <input name="password" type="password" placeholder="Пароль" required>
+        <select name="role"><option value="admin">Админ</option><option value="readonly">Чтение</option></select>
         <button type="submit" class="btn-custom">Добавить</button>
       </form>
       <div id="adminsList"></div>
     </div>
     <div id="invites" class="tab-pane">
       <form action="/create_invite" method="post" style="display:flex; gap:0.5rem; margin-bottom:1rem;">
-        <select name="role" style="padding:0.5rem; background:#13131f; color:white; border:1px solid #30363d; border-radius:6px;"><option value="readonly">Только чтение</option><option value="admin">Администратор</option></select>
+        <select name="role"><option value="readonly">Только чтение</option><option value="admin">Администратор</option></select>
         <button type="submit" class="btn-custom">Создать</button>
       </form>
       <div id="invitesList"></div>
@@ -579,8 +586,8 @@ HTML_DASHBOARD = """<!DOCTYPE html>
     }
 
     function updateUI(data) {
-      document.getElementById('acc1Name').textContent = data.acc1_name || 'Аккаунт 1';
-      document.getElementById('acc2Name').textContent = data.acc2_name || '—';
+      document.getElementById('acc1Name')?.textContent = data.acc1_name || 'Аккаунт 1';
+      document.getElementById('acc2Name')?.textContent = data.acc2_name || '—';
       acc1Name = data.acc1_name; acc2Name = data.acc2_name;
       let sel = document.getElementById('accountSelect');
       sel.innerHTML = ''; sel.add(new Option(acc1Name,'1'));
