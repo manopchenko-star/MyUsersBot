@@ -671,7 +671,7 @@ async def check_auth(request):
 async def dashboard(request):
     user = await check_auth(request)
     is_admin = (user == "admin" or (user in admins and admins[user]["role"] == "admin"))
-    return web.Response(text=HTML_DASHBOARD.format(user=user, is_admin=is_admin), content_type="text/html")
+    return web.Response(text=HTML_DASHBOARD.replace("{user}", user).replace("{is_admin}", str(is_admin)), content_type="text/html")
 
 async def guest_view(request):
     key = request.query.get("key", "")
