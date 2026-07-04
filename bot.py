@@ -891,8 +891,11 @@ async def websocket_handler(request):
     acc2_name = ACC2_DISPLAY_NAME if ACC2_DISPLAY_NAME else (await client2.get_me()).first_name if client2 else None
     initial = {"muted_chats": list(muted_chats), "protected_users": list(protected_users), "history": command_history, "chat_names": await get_chat_names(), "user_names": await get_user_names(), "acc1_name": (await client1.get_me()).first_name or "Аккаунт 1", "acc2_name": acc2_name, "invites": invites, "admins": list(admins.keys())}
     await ws.send_str(json.dumps(initial, default=str, ensure_ascii=False))
-    try: async for msg in ws: pass
-    finally: ws_clients.discard(ws)
+    try:
+        async for msg in ws:
+            pass
+    finally:
+        ws_clients.discard(ws)
     return ws
 
 async def guest_ws_handler(request):
