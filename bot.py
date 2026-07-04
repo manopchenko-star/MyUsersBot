@@ -122,7 +122,7 @@ async def init_protected_users():
         except Exception as e: print(f"⚠️ Не удалось получить данные второго аккаунта: {e}")
     save_state(); await broadcast_state()
 
-# ========== ОБРАБОТЧИКИ КОМАНД ==========
+# ========== ОБРАБОТЧИКИ КОМАНД (полный список) ==========
 def register_handlers(client_instance):
     @client_instance.on(events.NewMessage(outgoing=True, pattern=r'^\.mute$'))
     async def mute_cmd(event):
@@ -413,33 +413,37 @@ if bot:
         data = event.data.decode()
         if data.startswith("approve:"):
             token = data.split(":")[1]
-            if token in auth_tokens: auth_tokens[token] = True; await event.edit("✅ Вход одобрен. Можете вернуться на сайт и войти.", buttons=None)
+            if token in auth_tokens: auth_tokens[token] = True; await event.edit("✅ Вход одобрен.", buttons=None)
         elif data.startswith("reject:"):
             token = data.split(":")[1]; auth_tokens.pop(token, None); await event.edit("🚫 Вход отклонён.", buttons=None)
 
-# ========== СТИЛЬНЫЙ САЙТ С ЭФФЕКТАМИ ==========
-HTML_LOGIN = f"""<html><head><meta charset="utf-8"><title>Вход</title>
+# ========== СТИЛЬНЫЙ САЙТ С КАСТОМНЫМ КУРСОРОМ ==========
+HTML_LOGIN = """<html><head><meta charset="utf-8"><title>Вход</title>
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Montserrat:wght@300;600&display=swap');
-* {{ box-sizing: border-box; }}
-body {{ margin: 0; height: 100vh; display: flex; align-items: center; justify-content: center; background: linear-gradient(45deg, #0a0a0a, #1a1a2e, #0a0a0a); background-size: 400% 400%; animation: gradientBG 10s ease infinite; font-family: 'Montserrat', sans-serif; }}
-@keyframes gradientBG {{ 0%{{background-position:0% 50%}} 50%{{background-position:100% 50%}} 100%{{background-position:0% 50%}} }}
-.card {{ background: rgba(20,20,30,0.9); backdrop-filter: blur(10px); border: 1px solid rgba(233,69,96,0.3); border-radius: 16px; padding: 2rem; width: 320px; box-shadow: 0 0 30px rgba(233,69,96,0.3), 0 0 60px rgba(233,69,96,0.1); animation: pulse 2s infinite; }}
-@keyframes pulse {{ 0% {{ box-shadow: 0 0 30px rgba(233,69,96,0.3); }} 50% {{ box-shadow: 0 0 50px rgba(233,69,96,0.6); }} 100% {{ box-shadow: 0 0 30px rgba(233,69,96,0.3); }} }}
-h2 {{ color: #e94560; text-align: center; font-weight: 600; margin-top: 0; text-shadow: 0 0 10px rgba(233,69,96,0.5); }}
-input {{ width: 100%; padding: 0.7rem; margin: 0.5rem 0; border: none; border-radius: 8px; background: #1a1a2e; color: #e0e0e0; font-size: 1rem; border: 1px solid rgba(233,69,96,0.2); transition: 0.3s; }}
-input:focus {{ border-color: #e94560; box-shadow: 0 0 10px rgba(233,69,96,0.5); outline: none; }}
-button {{ width: 100%; padding: 0.7rem; margin-top: 1rem; border: none; border-radius: 8px; background: #e94560; color: white; font-weight: 600; cursor: pointer; transition: 0.3s; box-shadow: 0 0 15px rgba(233,69,96,0.4); }}
-button:hover {{ background: #c93750; transform: scale(1.02); box-shadow: 0 0 25px rgba(233,69,96,0.6); }}
-.bot-login {{ margin-top: 1.5rem; text-align: center; }}
-.bot-login button {{ background: transparent; border: 1px solid #e94560; box-shadow: none; }}
-.bot-login button:hover {{ background: rgba(233,69,96,0.1); }}
+* { box-sizing: border-box; cursor: none; }
+body { margin: 0; height: 100vh; display: flex; align-items: center; justify-content: center; background: linear-gradient(45deg, #0a0a0a, #1a1a2e, #0a0a0a); background-size: 400% 400%; animation: gradientBG 10s ease infinite; font-family: 'Montserrat', sans-serif; }
+@keyframes gradientBG { 0%{background-position:0% 50%} 50%{background-position:100% 50%} 100%{background-position:0% 50%} }
+.card { background: rgba(20,20,30,0.9); backdrop-filter: blur(10px); border: 1px solid rgba(233,69,96,0.3); border-radius: 16px; padding: 2rem; width: 320px; box-shadow: 0 0 30px rgba(233,69,96,0.3), 0 0 60px rgba(233,69,96,0.1); animation: pulse 2s infinite; }
+@keyframes pulse { 0% { box-shadow: 0 0 30px rgba(233,69,96,0.3); } 50% { box-shadow: 0 0 50px rgba(233,69,96,0.6); } 100% { box-shadow: 0 0 30px rgba(233,69,96,0.3); } }
+h2 { color: #e94560; text-align: center; font-weight: 600; margin-top: 0; text-shadow: 0 0 10px rgba(233,69,96,0.5); }
+input { width: 100%; padding: 0.7rem; margin: 0.5rem 0; border: none; border-radius: 8px; background: #1a1a2e; color: #e0e0e0; font-size: 1rem; border: 1px solid rgba(233,69,96,0.2); transition: 0.3s; }
+input:focus { border-color: #e94560; box-shadow: 0 0 10px rgba(233,69,96,0.5); outline: none; }
+button { width: 100%; padding: 0.7rem; margin-top: 1rem; border: none; border-radius: 8px; background: #e94560; color: white; font-weight: 600; cursor: none; transition: 0.3s; box-shadow: 0 0 15px rgba(233,69,96,0.4); }
+button:hover { background: #c93750; transform: scale(1.02); box-shadow: 0 0 25px rgba(233,69,96,0.6); }
+.bot-login { margin-top: 1.5rem; text-align: center; }
+.bot-login button { background: transparent; border: 1px solid #e94560; box-shadow: none; }
+.bot-login button:hover { background: rgba(233,69,96,0.1); }
+.cursor { width: 20px; height: 20px; border: 2px solid #e94560; border-radius: 50%; position: fixed; pointer-events: none; transform: translate(-50%, -50%); mix-blend-mode: difference; transition: width 0.2s, height 0.2s; z-index: 9999; }
+.cursor-dot { width: 6px; height: 6px; background: #e94560; border-radius: 50%; position: fixed; pointer-events: none; transform: translate(-50%, -50%); z-index: 9999; }
 </style></head><body>
+<div class="cursor"></div>
+<div class="cursor-dot"></div>
 <div class="card">
 <form action="/auth/login" method="post">
 <h2>Вход</h2>
-<input type="text" name="username" placeholder="Логин" value="{ADMIN_USER}">
-<input type="password" name="password" placeholder="Пароль">
+<input type="text" name="username" placeholder="Логин" value="admin" autocomplete="username">
+<input type="password" name="password" placeholder="Пароль" autocomplete="current-password">
 <button type="submit">Войти</button>
 </form>
 <div class="bot-login">
@@ -447,17 +451,28 @@ button:hover {{ background: #c93750; transform: scale(1.02); box-shadow: 0 0 25p
 </div>
 </div>
 <script>
-async function loginViaBot() {{
+const cursor = document.querySelector('.cursor');
+const dot = document.querySelector('.cursor-dot');
+document.addEventListener('mousemove', e => {
+    cursor.style.left = e.clientX + 'px';
+    cursor.style.top = e.clientY + 'px';
+    dot.style.left = e.clientX + 'px';
+    dot.style.top = e.clientY + 'px';
+});
+async function loginViaBot() {
     const resp = await fetch('/auth/request_bot');
     const data = await resp.json();
-    if (data.token) {{
+    if (data.token) {
         document.cookie = "auth_token=" + data.token + "; path=/";
-        const interval = setInterval(async () => {{
+        const interval = setInterval(async () => {
             const check = await fetch('/auth/check_token?token=' + data.token);
-            if ((await check.json()).approved) {{ clearInterval(interval); window.location.href = '/dashboard'; }}
-        }}, 3000);
-    }}
-}}
+            if ((await check.json()).approved) {
+                clearInterval(interval);
+                window.location.href = '/dashboard';
+            }
+        }, 3000);
+    }
+}
 </script>
 </body></html>"""
 
@@ -470,7 +485,7 @@ HTML_DASHBOARD = """<!DOCTYPE html>
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
   <style>
     @import url('https://fonts.googleapis.com/css2?family=Montserrat:wght@300;400;600&display=swap');
-    * { box-sizing: border-box; }
+    * { box-sizing: border-box; cursor: none; }
     body { margin: 0; background: linear-gradient(135deg, #0a0a0a, #1a1a2e, #0a0a0a); background-size: 400% 400%; animation: gradientBG 15s ease infinite; color: #e0e0e0; font-family: 'Montserrat', sans-serif; }
     @keyframes gradientBG { 0%{background-position:0% 50%} 50%{background-position:100% 50%} 100%{background-position:0% 50%} }
     .navbar { display: flex; align-items: center; justify-content: space-between; background: rgba(19,19,31,0.9); backdrop-filter: blur(10px); padding: 0.8rem 2rem; border-bottom: 1px solid rgba(233,69,96,0.3); box-shadow: 0 0 20px rgba(233,69,96,0.2); }
@@ -480,7 +495,7 @@ HTML_DASHBOARD = """<!DOCTYPE html>
     .logout-btn { background: rgba(233,69,96,0.2); padding: 0.4rem 0.8rem; border-radius: 6px; color: #e94560; text-decoration: none; font-size: 0.9rem; transition: 0.3s; }
     .logout-btn:hover { background: rgba(233,69,96,0.4); box-shadow: 0 0 10px rgba(233,69,96,0.3); }
     .tabs { display: flex; gap: 0.5rem; padding: 1rem 2rem; background: rgba(19,19,31,0.8); border-bottom: 1px solid rgba(255,255,255,0.05); overflow-x: auto; }
-    .tabs button { background: transparent; color: #aaa; border: none; padding: 0.5rem 1rem; border-radius: 8px; font-size: 0.9rem; cursor: pointer; transition: 0.2s; }
+    .tabs button { background: transparent; color: #aaa; border: none; padding: 0.5rem 1rem; border-radius: 8px; font-size: 0.9rem; cursor: none; transition: 0.2s; }
     .tabs button.active { background: #e94560; color: white; box-shadow: 0 0 15px rgba(233,69,96,0.5); }
     .tabs button:hover:not(.active) { color: #e94560; }
     .content { padding: 2rem; }
@@ -488,7 +503,7 @@ HTML_DASHBOARD = """<!DOCTYPE html>
     .tab-pane.active { display: block; }
     .list-group-item { background: rgba(19,19,31,0.8); border: 1px solid rgba(255,255,255,0.05); border-radius: 8px; padding: 0.7rem 1rem; margin-bottom: 0.5rem; display: flex; justify-content: space-between; align-items: center; transition: 0.3s; }
     .list-group-item:hover { border-color: rgba(233,69,96,0.3); box-shadow: 0 0 10px rgba(233,69,96,0.2); }
-    .btn-custom { background: #e94560; color: white; border: none; padding: 0.4rem 0.8rem; border-radius: 6px; cursor: pointer; font-size: 0.8rem; transition: 0.3s; box-shadow: 0 0 10px rgba(233,69,96,0.3); }
+    .btn-custom { background: #e94560; color: white; border: none; padding: 0.4rem 0.8rem; border-radius: 6px; cursor: none; font-size: 0.8rem; transition: 0.3s; box-shadow: 0 0 10px rgba(233,69,96,0.3); }
     .btn-custom:hover { background: #c93750; box-shadow: 0 0 15px rgba(233,69,96,0.5); }
     table { width: 100%; border-collapse: collapse; margin-top: 1rem; }
     th, td { padding: 0.6rem; border-bottom: 1px solid rgba(255,255,255,0.05); text-align: left; }
@@ -501,9 +516,13 @@ HTML_DASHBOARD = """<!DOCTYPE html>
     input, select { background: #13131f; color: white; border: 1px solid #30363d; border-radius: 6px; padding: 0.5rem; transition: 0.3s; }
     input:focus, select:focus { border-color: #e94560; box-shadow: 0 0 10px rgba(233,69,96,0.3); outline: none; }
     @media (max-width: 768px) { .tabs { flex-wrap: nowrap; } }
+    .cursor { width: 20px; height: 20px; border: 2px solid #e94560; border-radius: 50%; position: fixed; pointer-events: none; transform: translate(-50%, -50%); mix-blend-mode: difference; transition: width 0.2s, height 0.2s; z-index: 9999; }
+    .cursor-dot { width: 6px; height: 6px; background: #e94560; border-radius: 50%; position: fixed; pointer-events: none; transform: translate(-50%, -50%); z-index: 9999; }
   </style>
 </head>
 <body>
+  <div class="cursor"></div>
+  <div class="cursor-dot"></div>
   <nav class="navbar">
     <a class="navbar-brand" href="#">🤖 Userbot Panel</a>
     <div class="nav-info">
@@ -545,7 +564,7 @@ HTML_DASHBOARD = """<!DOCTYPE html>
     <div id="admins" class="tab-pane">
       <form action="/add_admin" method="post" style="display:flex; gap:0.5rem; margin-bottom:1rem;">
         <input name="username" placeholder="Логин" required>
-        <input name="password" type="password" placeholder="Пароль" required>
+        <input name="password" type="password" placeholder="Пароль" required autocomplete="new-password">
         <select name="role"><option value="admin">Админ</option><option value="readonly">Чтение</option></select>
         <button type="submit" class="btn-custom">Добавить</button>
       </form>
@@ -562,6 +581,14 @@ HTML_DASHBOARD = """<!DOCTYPE html>
   <div id="notification" class="notification"></div>
 
   <script>
+    const cursor = document.querySelector('.cursor');
+    const dot = document.querySelector('.cursor-dot');
+    document.addEventListener('mousemove', e => {
+        cursor.style.left = e.clientX + 'px';
+        cursor.style.top = e.clientY + 'px';
+        dot.style.left = e.clientX + 'px';
+        dot.style.top = e.clientY + 'px';
+    });
     let ws, fullHistory=[], acc1Name="Аккаунт 1", acc2Name="Аккаунт 2", showAllHistory=false;
     const MAX_VISIBLE=20;
 
@@ -586,9 +613,7 @@ HTML_DASHBOARD = """<!DOCTYPE html>
     }
 
     function updateUI(data) {
-      document.getElementById('acc1Name')?.textContent = data.acc1_name || 'Аккаунт 1';
-      document.getElementById('acc2Name')?.textContent = data.acc2_name || '—';
-      acc1Name = data.acc1_name; acc2Name = data.acc2_name;
+      acc1Name = data.acc1_name || 'Аккаунт 1'; acc2Name = data.acc2_name;
       let sel = document.getElementById('accountSelect');
       sel.innerHTML = ''; sel.add(new Option(acc1Name,'1'));
       if (acc2Name) sel.add(new Option(acc2Name,'2'));
@@ -662,7 +687,7 @@ ws.onmessage = function(event) {
 </script>
 </body></html>"""
 
-# ========== ВЕБ-СЕРВЕР ОБРАБОТЧИКИ ==========
+# ========== ВЕБ-СЕРВЕР (полный код) ==========
 async def check_auth(request):
     auth = request.headers.get("Authorization")
     if auth and auth.startswith("Basic "):
@@ -677,8 +702,7 @@ async def check_auth(request):
 
 async def dashboard(request):
     user = await check_auth(request)
-    is_admin = (user == "admin" or (user in admins and admins[user]["role"] == "admin"))
-    return web.Response(text=HTML_DASHBOARD.replace("{user}", user).replace("{is_admin}", str(is_admin)), content_type="text/html")
+    return web.Response(text=HTML_DASHBOARD.replace("{user}", user), content_type="text/html")
 
 async def guest_view(request):
     key = request.query.get("key", "")
