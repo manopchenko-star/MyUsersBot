@@ -87,35 +87,60 @@ reminders = load_json(REMIND_FILE, [])
 load_admins(); load_invites(); load_state(); load_history()
 
 async def backup_state():
-    if not bot or not bot.is_connected(): return
-    try:
-        data = {"muted_chats": list(muted_chats), "protected_users": list(protected_users), "admins": admins, "extra_clients": {k: {"session": v["session"]} for k, v in extra_clients.items()}, "auto_reply_global": auto_reply_global, "auto_reply_chats": auto_reply_chats}
-        text = json.dumps(data, ensure_ascii=False)
-        async for msg in bot.iter_messages(BACKUP_CHAT, from_user='me', limit=10): await msg.delete()
-        await bot.send_message(BACKUP_CHAT, text)
-    except Exception as e: print(f"⚠️ Ошибка бэкапа: {e}")
+    data = {"muted_chats": list(muted_chats), "protected_users": list(protected_users), "admins": admins, "extra_clients": {k: {"session": v["session"]} for k, v in extra_clients.items()}, "auto_reply_global": auto_reply_global, "auto_reply_chats": auto_reply_chats}
+    text = json.dumps(data, ensure_ascii=False)
+
+    # Пробуем через бота в BACKUP_CHAT
+    sent = False
+    if bot and bot.is_connected():
+        try:
+            async for msg in bot.iter_messages(BACKUP_CHAT, from_user='me', limit=10):
+                await msg.delete()
+            await bot.send_message(BACKUP_CHAT, text)
+            sent = True
+        except Exception as e:
+            print(f"⚠️ Бэкап через бота не удался: {e}")
+
+    # Если не отправлено — в избранное основного аккаунта
+    if not sent:
+        try:
+            async for msg in client1.iter_messages('me', from_user='me', limit=10):
+                if msg.text and msg.text.startswith('{'):
+                    await msg.delete()
+            await client1.send_message('me', text)
+        except Exception as e:
+            print(f"⚠️ Не удалось сохранить бэкап в Избранное: {e}")
 
 async def restore_state():
-    if not bot or not bot.is_connected(): return
-    try:
-        async for msg in bot.iter_messages(BACKUP_CHAT, from_user='me', limit=1):
-            data = json.loads(msg.text)
-            global muted_chats, protected_users, admins, extra_clients, auto_reply_global, auto_reply_chats
-            muted_chats = set(data.get("muted_chats", []))
-            protected_users = set(data.get("protected_users", []))
-            admins = data.get("admins", {})
-            auto_reply_global = data.get("auto_reply_global", auto_reply_global)
-            auto_reply_chats = data.get("auto_reply_chats", {})
-            for name, info in data.get("extra_clients", {}).items():
-                sess = info.get("session")
-                if sess:
-                    try:
-                        client = TelegramClient(StringSession(sess), API_ID, API_HASH)
-                        await client.start()
-                        extra_clients[name] = {"session": sess, "client": client}
-                    except Exception as e: print(f"⚠️ Не удалось подключить {name}: {e}")
-            break
-    except Exception as e: print(f"⚠️ Ошибка восстановления: {e}")
+    data = None
+    # Сначала ищем в BACKUP_CHAT (через бота)
+    if bot and bot.is_connected():
+        try:
+            async for msg in bot.iter_messages(BACKUP_CHAT, from_user='me', limit=1):
+                if msg.text: data = json.loads(msg.text); break
+        except: pass
+    # Если не нашли — ищем в избранном client1
+    if not data:
+        try:
+            async for msg in client1.iter_messages('me', from_user='me', limit=1):
+                if msg.text and msg.text.startswith('{'): data = json.loads(msg.text); break
+        except: pass
+    if not data: return
+
+    global muted_chats, protected_users, admins, extra_clients, auto_reply_global, auto_reply_chats
+    muted_chats = set(data.get("muted_chats", []))
+    protected_users = set(data.get("protected_users", []))
+    admins = data.get("admins", {})
+    auto_reply_global = data.get("auto_reply_global", auto_reply_global)
+    auto_reply_chats = data.get("auto_reply_chats", {})
+    for name, info in data.get("extra_clients", {}).items():
+        sess = info.get("session")
+        if sess:
+            try:
+                client = TelegramClient(StringSession(sess), API_ID, API_HASH)
+                await client.start()
+                extra_clients[name] = {"session": sess, "client": client}
+            except Exception as e: print(f"⚠️ Не удалось подключить {name}: {e}")
 
 async def backup_loop():
     while True:
