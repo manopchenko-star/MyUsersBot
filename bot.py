@@ -88,42 +88,46 @@ load_admins(); load_invites(); load_state(); load_history()
 
 async def backup_state():
     data = {"muted_chats": list(muted_chats), "protected_users": list(protected_users), "admins": admins, "extra_clients": {k: {"session": v["session"]} for k, v in extra_clients.items()}, "auto_reply_global": auto_reply_global, "auto_reply_chats": auto_reply_chats}
-    text = json.dumps(data, ensure_ascii=False)
+    buf = io.BytesIO(json.dumps(data, ensure_ascii=False).encode('utf-8'))
+    buf.name = "backup.json"
 
-    # Пробуем через бота в BACKUP_CHAT
     sent = False
     if bot and bot.is_connected():
         try:
             async for msg in bot.iter_messages(BACKUP_CHAT, from_user='me', limit=10):
                 await msg.delete()
-            await bot.send_message(BACKUP_CHAT, text)
+            await bot.send_file(BACKUP_CHAT, buf)
             sent = True
         except Exception as e:
             print(f"⚠️ Бэкап через бота не удался: {e}")
 
-    # Если не отправлено — в избранное основного аккаунта
     if not sent:
         try:
             async for msg in client1.iter_messages('me', from_user='me', limit=10):
-                if msg.text and msg.text.startswith('{'):
+                if msg.file and msg.file.name == "backup.json":
                     await msg.delete()
-            await client1.send_message('me', text)
+            buf.seek(0)
+            await client1.send_file('me', buf)
         except Exception as e:
             print(f"⚠️ Не удалось сохранить бэкап в Избранное: {e}")
 
 async def restore_state():
     data = None
-    # Сначала ищем в BACKUP_CHAT (через бота)
+    # Пробуем скачать файл от бота
     if bot and bot.is_connected():
         try:
             async for msg in bot.iter_messages(BACKUP_CHAT, from_user='me', limit=1):
-                if msg.text: data = json.loads(msg.text); break
+                if msg.file and msg.file.name == "backup.json":
+                    data = json.loads((await msg.download_media(bytes)).decode('utf-8'))
+                    break
         except: pass
-    # Если не нашли — ищем в избранном client1
+    # Если нет — ищем в избранном
     if not data:
         try:
             async for msg in client1.iter_messages('me', from_user='me', limit=1):
-                if msg.text and msg.text.startswith('{'): data = json.loads(msg.text); break
+                if msg.file and msg.file.name == "backup.json":
+                    data = json.loads((await msg.download_media(bytes)).decode('utf-8'))
+                    break
         except: pass
     if not data: return
 
