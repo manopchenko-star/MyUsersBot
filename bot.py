@@ -617,6 +617,7 @@ HTML_DASHBOARD = """<!DOCTYPE html>
     <button data-tab="history">📜 История</button>
     <button data-tab="admins">👥 Админы</button>
     <button data-tab="accounts">👤 Аккаунты</button>
+    <button data-tab="backup">📦 Бэкап</button>
   </div>
   <div class="content">
     <div id="muted" class="tab-pane active"><div id="mutedList"></div></div>
@@ -657,6 +658,15 @@ HTML_DASHBOARD = """<!DOCTYPE html>
         <button type="submit" class="btn-custom">Подключить</button>
       </form>
       <div id="extraAccountsList" style="margin-top:1rem;"></div>
+    </div>
+    <div id="backup" class="tab-pane">
+      <button class="btn-custom" onclick="createBackup()" style="margin-bottom:1rem;">Создать бэкап сейчас</button>
+      <h5>📦 Состояние из последнего бэкапа</h5>
+      <div id="backupMutedList"></div>
+      <h5 style="margin-top:1rem;">🛡 Защищённые</h5>
+      <div id="backupProtectedList"></div>
+      <h5 style="margin-top:1rem;">👤 Дополнительные аккаунты</h5>
+      <div id="backupExtraAccounts"></div>
     </div>
   </div>
   <div id="notification" class="notification"></div>
@@ -702,10 +712,12 @@ HTML_DASHBOARD = """<!DOCTYPE html>
       let mutedHtml = '';
       for (let id in data.chat_names) mutedHtml += `<div class="list-group-item">${data.chat_names[id]} <button class="btn-custom" onclick="unmuteChat(${id})">Размутить</button></div>`;
       document.getElementById('mutedList').innerHTML = mutedHtml || 'Нет чатов';
+      document.getElementById('backupMutedList').innerHTML = mutedHtml || 'Нет чатов';
 
       let protectedHtml = '';
       for (let id in data.user_names) protectedHtml += `<div class="list-group-item">${data.user_names[id]}</div>`;
       document.getElementById('protectedList').innerHTML = protectedHtml || 'Нет';
+      document.getElementById('backupProtectedList').innerHTML = protectedHtml || 'Нет';
 
       let adminsHtml = '';
       if (data.admins) data.admins.forEach(user => adminsHtml += `<div class="list-group-item">${user} <a href="/delete_admin?user=${user}" class="btn-custom">Удалить</a></div>`);
@@ -714,6 +726,7 @@ HTML_DASHBOARD = """<!DOCTYPE html>
       let extraHtml = '';
       extraAccounts.forEach(name => extraHtml += `<div class="list-group-item">${name} <a href="/remove_account?name=${name}" class="btn-custom">Отключить</a></div>`);
       document.getElementById('extraAccountsList').innerHTML = extraHtml || 'Нет дополнительных аккаунтов';
+      document.getElementById('backupExtraAccounts').innerHTML = extraHtml || 'Нет дополнительных аккаунтов';
     }
 
     async function unmuteChat(id) {
@@ -728,6 +741,15 @@ HTML_DASHBOARD = """<!DOCTYPE html>
         showNotification('Ошибка при размуте', true);
         btn.disabled = false;
         btn.textContent = 'Размутить';
+      }
+    }
+
+    async function createBackup() {
+      try {
+        await fetch('/backup_now');
+        showNotification('Бэкап создан');
+      } catch(e) {
+        showNotification('Ошибка создания бэкапа', true);
       }
     }
 
@@ -1023,6 +1045,12 @@ async def send_cmd(request):
     else: redirect_url = "/dashboard"
     raise web.HTTPFound(redirect_url)
 
+async def backup_now_handler(request):
+    user = await check_auth(request)
+    if user == "readonly": raise web.HTTPFound("/dashboard?error=Недостаточно+прав")
+    await backup_state()
+    raise web.HTTPFound("/dashboard?msg=Бэкап+создан")
+
 async def handle_health(request): return web.Response(text="OK")
 
 async def websocket_handler(request):
@@ -1055,6 +1083,7 @@ app.router.add_get("/dashboard", dashboard); app.router.add_get("/guest", guest_
 app.router.add_get("/remove_protected", remove_protected); app.router.add_post("/send_cmd", send_cmd)
 app.router.add_post("/add_admin", add_admin); app.router.add_get("/delete_admin", delete_admin)
 app.router.add_post("/add_account", add_account); app.router.add_get("/remove_account", remove_account)
+app.router.add_get("/backup_now", backup_now_handler)
 app.router.add_get("/ws", websocket_handler); app.router.add_get("/guest-ws", guest_ws_handler)
 
 async def start_web_server():
