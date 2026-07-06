@@ -675,7 +675,6 @@ if bot:
                 pending_registrations.pop(token)
             await event.edit("🚫 Вход отклонён.", buttons=None)
 
-# ---------- HTML-шаблоны ----------
 HTML_LOGIN = """<html><head><meta charset="utf-8"><title>Вход</title>
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Montserrat:wght@300;600&display=swap');
@@ -959,19 +958,19 @@ HTML_DASHBOARD = """<!DOCTYPE html>
 
     function renderMuted(data) {
       let html = '';
-      for (let id in data.chat_names) html += `<div class="list-group-item">${data.chat_names[id]} <button class="btn-custom" onclick="unmuteChat(${id})">Размутить</button></div>`;
+      for (let id in data.chat_names) html += '<div class="list-group-item">' + data.chat_names[id] + ' <button class="btn-custom" onclick="unmuteChat(' + id + ')">Размутить</button></div>';
       document.getElementById('mutedList').innerHTML = html || 'Нет чатов';
     }
 
     function renderProtected(data) {
       let html = '';
-      for (let id in data.user_names) html += `<div class="list-group-item">${data.user_names[id]}</div>`;
+      for (let id in data.user_names) html += '<div class="list-group-item">' + data.user_names[id] + '</div>';
       document.getElementById('protectedList').innerHTML = html || 'Нет';
     }
 
     function renderHistory() {
       let html = '';
-      fullHistory.slice(-20).forEach(e => html += `<tr><td>${e.time.substr(11,8)}</td><td>${e.source}</td><td>${e.user_name}</td><td>${e.command}</td><td>${e.target_name||''}</td></tr>`);
+      fullHistory.slice(-20).forEach(e => html += '<tr><td>' + e.time.substr(11,8) + '</td><td>' + e.source + '</td><td>' + e.user_name + '</td><td>' + e.command + '</td><td>' + (e.target_name||'') + '</td></tr>');
       document.getElementById('historyBody').innerHTML = html || '<tr><td colspan="5">Нет записей</td></tr>';
     }
 
@@ -979,36 +978,36 @@ HTML_DASHBOARD = """<!DOCTYPE html>
       let html = '';
       backupHistory.forEach(e => {
         let statusHtml = e.success ? '<span class="badge badge-ok">✅</span>' : '<span class="badge badge-error">❌</span>';
-        html += `<tr><td>${new Date(e.time).toLocaleString()}</td><td>${statusHtml}</td></tr>`;
+        html += '<tr><td>' + new Date(e.time).toLocaleString() + '</td><td>' + statusHtml + '</td></tr>';
       });
       document.getElementById('backupHistoryBody').innerHTML = html || '<tr><td colspan="2">Нет бэкапов</td></tr>';
     }
 
     function renderAdmins(data) {
       let html = '';
-      if (data.admins) data.admins.forEach(user => html += `<div class="list-group-item">${user} <a href="/delete_admin?user=${user}" class="btn-custom">Удалить</a></div>`);
+      if (data.admins) data.admins.forEach(user => html += '<div class="list-group-item">' + user + ' <a href="/delete_admin?user=' + user + '" class="btn-custom">Удалить</a></div>');
       document.getElementById('adminsList').innerHTML = html || 'Нет админов';
     }
 
     function renderExtraAccounts() {
       let html = '';
-      extraAccounts.forEach(name => html += `<div class="list-group-item">${name} <a href="/remove_account?name=${name}" class="btn-custom">Отключить</a></div>`);
+      extraAccounts.forEach(name => html += '<div class="list-group-item">' + name + ' <a href="/remove_account?name=' + name + '" class="btn-custom">Отключить</a></div>');
       document.getElementById('extraAccountsList').innerHTML = html || 'Нет';
     }
 
     function renderAfk() {
       let html = '';
-      for (let uid in afkUsers) html += `<div class="list-group-item">${uid}: ${afkUsers[uid]} <button class="btn-custom" onclick="removeAfk('${uid}')">Снять</button></div>`;
+      for (let uid in afkUsers) html += '<div class="list-group-item">' + uid + ': ' + afkUsers[uid] + ' <button class="btn-custom" onclick="removeAfk(\'' + uid + '\')">Снять</button></div>';
       document.getElementById('afkList').innerHTML = html || 'Нет AFK';
     }
 
     function renderFilters() {
-      let blackHtml = blacklist.map(w => `<span class="badge badge-error">${w} <i onclick="removeBlacklistWord('${w}')" style="cursor:pointer;">×</i></span>`).join(' ');
+      let blackHtml = blacklist.map(w => '<span class="badge badge-error">' + w + ' <i onclick="removeBlacklistWord(\'' + w + '\')" style="cursor:pointer;">×</i></span>').join(' ');
       document.getElementById('blacklistWords').innerHTML = blackHtml || 'Нет слов';
       let filterHtml = '';
       for (let chat in filters) {
         for (let rule of filters[chat]) {
-          filterHtml += `<div class="list-group-item">Чат ${chat}: слово "${rule.word}" -> ${rule.action} <button class="btn-custom" onclick="removeFilter('${chat}', '${rule.word}')">Удалить</button></div>`;
+          filterHtml += '<div class="list-group-item">Чат ' + chat + ': слово "' + rule.word + '" -> ' + rule.action + ' <button class="btn-custom" onclick="removeFilter(\'' + chat + '\', \'' + rule.word + '\')">Удалить</button></div>';
         }
       }
       document.getElementById('filtersList').innerHTML = filterHtml || 'Нет фильтров';
@@ -1017,7 +1016,7 @@ HTML_DASHBOARD = """<!DOCTYPE html>
     function renderSchedule() {
       let html = '';
       schedule.forEach((task, idx) => {
-        html += `<div class="list-group-item">${task.time} - ${task.command} ${task.args||''} в ${task.target||'Избранное'} <button class="btn-custom" onclick="deleteSchedule(${idx})">Удалить</button></div>`;
+        html += '<div class="list-group-item">' + task.time + ' - ' + task.command + ' ' + (task.args||'') + ' в ' + (task.target||'Избранное') + ' <button class="btn-custom" onclick="deleteSchedule(' + idx + ')">Удалить</button></div>';
       });
       document.getElementById('scheduleList').innerHTML = html || 'Нет задач';
     }
@@ -1049,7 +1048,7 @@ HTML_DASHBOARD = """<!DOCTYPE html>
     }
     function exportCSV() {
       let csv = "time,source,user,command,target\n";
-      fullHistory.forEach(e => csv += `${e.time},${e.source},${e.user_name},${e.command},${e.target_name||''}\n`);
+      fullHistory.forEach(e => csv += e.time + ',' + e.source + ',' + e.user_name + ',' + e.command + ',' + (e.target_name||'') + '\n');
       const blob = new Blob([csv], {type: 'text/csv'});
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a'); a.href = url; a.download = 'history.csv'; a.click();
@@ -1137,7 +1136,7 @@ ws.onmessage = function(event) {
   html += '</ul><h3>Защищённые:</h3><ul>';
   for (let id in data.user_names) html += '<li>' + data.user_names[id] + '</li>';
   html += '</ul><h3>История:</h3><table border="1"><tr><th>Время</th><th>Команда</th></tr>';
-  data.history.forEach(e => html += `<tr><td>${e.time.substr(11,8)}</td><td>${e.command}</td></tr>`);
+  data.history.forEach(e => html += '<tr><td>' + e.time.substr(11,8) + '</td><td>' + e.command + '</td></tr>');
   html += '</table>';
   document.getElementById('content').innerHTML = html;
 };
