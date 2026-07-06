@@ -57,7 +57,7 @@ reminders = []
 invites = {}
 admins = {}
 extra_clients = {}
-backup_history = []  # список dict: {time, url}
+backup_history = []
 
 def load_json(path, default):
     if path.exists():
@@ -96,7 +96,7 @@ async def upload_to_tmpfiles(data_bytes: bytes) -> str:
     try:
         form = FormData()
         form.add_field("file", data_bytes, filename="backup.json")
-        form.add_field("expire", "86400")  # 24 часа
+        form.add_field("expire", "86400")
         async with http_session.post("https://tmpfiles.org/api/v1/upload", data=form, timeout=30) as resp:
             if resp.status == 200:
                 result = await resp.json()
@@ -108,6 +108,7 @@ async def upload_to_tmpfiles(data_bytes: bytes) -> str:
     return ""
 
 async def backup_state():
+    global backup_history
     data = {"muted_chats": list(muted_chats), "protected_users": list(protected_users), "admins": admins, "extra_clients": {k: {"session": v["session"]} for k, v in extra_clients.items()}, "auto_reply_global": auto_reply_global, "auto_reply_chats": auto_reply_chats}
     json_bytes = json.dumps(data, ensure_ascii=False).encode('utf-8')
     url = await upload_to_tmpfiles(json_bytes)
@@ -120,13 +121,11 @@ async def backup_state():
         await broadcast_state()
         print(f"📦 Бэкап загружен: {url}")
     else:
-        # fallback локально
         save_json("backup_local.json", data)
 
 async def restore_state():
     global muted_chats, protected_users, admins, extra_clients, auto_reply_global, auto_reply_chats
     data = None
-    # Пробуем последний URL из истории
     if backup_history:
         last_url = backup_history[-1]["url"]
         try:
@@ -195,7 +194,7 @@ async def broadcast_state():
         "admins": list(admins.keys()),
         "extra_clients": list(extra_clients.keys()),
         "owner_id": owner_id,
-        "backup_history": backup_history[-20:]   # последние 20
+        "backup_history": backup_history[-20:]
     }
     msg = json.dumps(data, default=str, ensure_ascii=False)
     for ws in list(ws_clients):
