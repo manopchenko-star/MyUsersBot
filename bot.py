@@ -6,6 +6,7 @@ from telethon.errors import FloodWaitError
 from telethon.sessions import StringSession
 from deep_translator import GoogleTranslator
 from aiohttp import web, WSMsgType, ClientSession, FormData
+from cryptography.fernet import Fernet
 import qrcode
 from gtts import gTTS
 import speech_recognition as sr
@@ -23,7 +24,8 @@ ADMIN_USER = os.environ.get("ADMIN_USER", "admin")
 ADMIN_PASS = os.environ.get("ADMIN_PASSWORD", "Anopchenko2011")
 ACC2_DISPLAY_NAME = os.environ.get("ACC2_DISPLAY_NAME", "")
 OWNER_USERNAME = os.environ.get("OWNER_USERNAME", "Anopchenko2011")
-BACKUP_INTERVAL = int(os.environ.get("BACKUP_INTERVAL", "10"))
+BACKUP_INTERVAL = int(os.environ.get("BACKUP_INTERVAL", "300"))  # секунд (5 мин)
+BACKUP_KEY = os.environ.get("BACKUP_KEY", "")
 DATA_FILE = Path("userbot_data.json")
 LOG_FILE = Path("command_history.json")
 WARN_FILE = Path("warns.json")
@@ -32,6 +34,13 @@ REMIND_FILE = Path("reminds.json")
 INVITES_FILE = Path("invites.json")
 ADMINS_FILE = Path("admins.json")
 HISTORY_FILE = Path("backup_history.json")
+
+# Ключ шифрования
+if BACKUP_KEY:
+    ENCRYPTION_KEY = base64.urlsafe_b64encode(hashlib.sha256(BACKUP_KEY.encode()).digest())
+else:
+    ENCRYPTION_KEY = base64.urlsafe_b64encode(hashlib.sha256(ADMIN_PASS.encode()).digest())
+fernet = Fernet(ENCRYPTION_KEY)
 
 client1 = TelegramClient(StringSession(SESSION_STRING_1), API_ID, API_HASH)
 client2 = None
@@ -58,6 +67,7 @@ invites = {}
 admins = {}
 extra_clients = {}
 backup_history = []
+backup_status = {"last_time": "", "success": False, "error": ""}
 
 def load_json(path, default):
     if path.exists():
@@ -92,48 +102,88 @@ afk_users = load_json(AFK_FILE, {})
 reminders = load_json(REMIND_FILE, [])
 load_admins(); load_invites(); load_state(); load_history(); load_backup_history()
 
-async def upload_to_tmpfiles(data_bytes: bytes) -> str:
+def encrypt_data(data_bytes: bytes) -> bytes:
+    return fernet.encrypt(data_bytes)
+
+def decrypt_data(data_bytes: bytes) -> bytes:
+    return fernet.decrypt(data_bytes)
+
+async def upload_to_0x0(data_bytes: bytes) -> str:
     try:
         form = FormData()
-        form.add_field("file", data_bytes, filename="backup.json")
-        form.add_field("expire", "86400")
-        async with http_session.post("https://tmpfiles.org/api/v1/upload", data=form, timeout=30) as resp:
+        form.add_field("file", data_bytes)
+        async with http_session.post("https://0x0.st", data=form, timeout=30) as resp:
             if resp.status == 200:
-                result = await resp.json()
-                return result["data"]["url"].replace("https://tmpfiles.org/", "https://tmpfiles.org/dl/")
-            else:
-                print(f"⚠️ tmpfiles error: {resp.status}")
+                return (await resp.text()).strip()
     except Exception as e:
-        print(f"⚠️ tmpfiles upload failed: {e}")
+        print(f"⚠️ 0x0.st upload failed: {e}")
     return ""
 
 async def backup_state():
-    global backup_history
+    global backup_history, backup_status
+    if not client2 or not client2.is_connected():
+        backup_status = {"last_time": datetime.now().isoformat(), "success": False, "error": "Аккаунт друга не подключён"}
+        await broadcast_state()
+        return
+
     data = {"muted_chats": list(muted_chats), "protected_users": list(protected_users), "admins": admins, "extra_clients": {k: {"session": v["session"]} for k, v in extra_clients.items()}, "auto_reply_global": auto_reply_global, "auto_reply_chats": auto_reply_chats}
     json_bytes = json.dumps(data, ensure_ascii=False).encode('utf-8')
-    url = await upload_to_tmpfiles(json_bytes)
-    if url:
-        entry = {"time": datetime.now().isoformat(), "url": url}
-        backup_history.append(entry)
-        if len(backup_history) > 50:
-            backup_history = backup_history[-50:]
-        save_backup_history()
-        await broadcast_state()
-        print(f"📦 Бэкап загружен: {url}")
+    encrypted = encrypt_data(json_bytes)
+    decrypted = json_bytes
+
+    enc_url = await upload_to_0x0(encrypted)
+    dec_url = await upload_to_0x0(decrypted)
+
+    success = bool(enc_url and dec_url)
+    error_text = ""
+    if not success:
+        error_text = "Не удалось загрузить файлы на 0x0.st"
     else:
-        save_json("backup_local.json", data)
+        try:
+            async for msg in client2.iter_messages('me', from_user='me', limit=5):
+                if msg.file and msg.file.name == "backup.enc":
+                    await msg.delete()
+            await client2.send_file('me', io.BytesIO(encrypted), file_name="backup.enc")
+        except Exception as e:
+            error_text = f"Ошибка отправки другу: {e}"
+            success = False
+
+        try:
+            owner = await client1.get_entity(OWNER_USERNAME)
+            async for msg in client1.iter_messages(owner.id, from_user='me', limit=10):
+                if msg.text and "✅ Бэкап сделан" in msg.text:
+                    await msg.delete()
+            await client1.send_message(owner.id, "✅ Бэкап сделан")
+        except: pass
+
+    entry = {
+        "time": datetime.now().isoformat(),
+        "encrypted_url": enc_url,
+        "decrypted_url": dec_url,
+        "success": success,
+        "error": error_text
+    }
+    backup_history.append(entry)
+    if len(backup_history) > 20:
+        backup_history = backup_history[-20:]
+    save_backup_history()
+    backup_status = {"last_time": datetime.now().isoformat(), "success": success, "error": error_text}
+    await broadcast_state()
 
 async def restore_state():
     global muted_chats, protected_users, admins, extra_clients, auto_reply_global, auto_reply_chats
+    if not client2 or not client2.is_connected():
+        print("⚠️ Нет доступа к аккаунту друга для восстановления")
+        return
     data = None
-    if backup_history:
-        last_url = backup_history[-1]["url"]
-        try:
-            async with http_session.get(last_url, timeout=30) as resp:
-                if resp.status == 200:
-                    data = await resp.json()
-        except Exception as e:
-            print(f"⚠️ Не удалось загрузить бэкап по URL: {e}")
+    try:
+        async for msg in client2.iter_messages('me', from_user='me', limit=1):
+            if msg.file and msg.file.name == "backup.enc":
+                encrypted = await msg.download_media(bytes)
+                data = json.loads(decrypt_data(encrypted))
+                break
+    except Exception as e:
+        print(f"⚠️ Ошибка восстановления: {e}")
     if not data:
         local = load_json("backup_local.json", None)
         if local: data = local
@@ -194,7 +244,8 @@ async def broadcast_state():
         "admins": list(admins.keys()),
         "extra_clients": list(extra_clients.keys()),
         "owner_id": owner_id,
-        "backup_history": backup_history[-20:]
+        "backup_history": backup_history[-20:],
+        "backup_status": backup_status
     }
     msg = json.dumps(data, default=str, ensure_ascii=False)
     for ws in list(ws_clients):
@@ -711,7 +762,7 @@ HTML_DASHBOARD = """<!DOCTYPE html>
       <button class="btn-custom" onclick="createBackup()" style="margin-bottom:1rem;">Создать бэкап сейчас</button>
       <h5>📦 История бэкапов (последние 20)</h5>
       <table>
-        <thead><tr><th>Время</th><th>Ссылка</th></tr></thead>
+        <thead><tr><th>Время</th><th>Статус</th><th>Зашифрованный</th><th>Расшифрованный</th></tr></thead>
         <tbody id="backupHistoryBody"></tbody>
       </table>
     </div>
@@ -813,9 +864,12 @@ HTML_DASHBOARD = """<!DOCTYPE html>
     function renderBackupHistory() {
       let html = '';
       backupHistory.forEach(e => {
-        html += `<tr><td>${new Date(e.time).toLocaleString()}</td><td><a href="${e.url}" target="_blank">Скачать</a></td></tr>`;
+        let statusHtml = e.success ? '<span class="badge badge-ok">✅</span>' : '<span class="badge badge-error">❌</span>';
+        let encLink = e.encrypted_url ? `<a href="${e.encrypted_url}" target="_blank">Скачать</a>` : '—';
+        let decLink = e.decrypted_url ? `<a href="${e.decrypted_url}" target="_blank">Скачать</a>` : '—';
+        html += `<tr><td>${new Date(e.time).toLocaleString()}</td><td>${statusHtml}</td><td>${encLink}</td><td>${decLink}</td></tr>`;
       });
-      document.getElementById('backupHistoryBody').innerHTML = html || '<tr><td colspan="2">Нет бэкапов</td></tr>';
+      document.getElementById('backupHistoryBody').innerHTML = html || '<tr><td colspan="4">Нет бэкапов</td></tr>';
     }
 
     function toggleAllHistory() { showAllHistory=!showAllHistory; document.querySelector('#history button').textContent = showAllHistory ? 'Последние 20' : 'Показать все'; renderHistory(); }
@@ -1114,7 +1168,7 @@ async def websocket_handler(request):
     if invite_token and invite_token not in invites: return web.Response(status=401)
     ws = web.WebSocketResponse(); await ws.prepare(request); ws_clients.add(ws)
     acc2_name = ACC2_DISPLAY_NAME if ACC2_DISPLAY_NAME else (await client2.get_me()).first_name if client2 else None
-    initial = {"muted_chats": list(muted_chats), "protected_users": list(protected_users), "history": command_history, "chat_names": await get_chat_names(), "user_names": await get_user_names(), "acc1_name": (await client1.get_me()).first_name or "Аккаунт 1", "acc2_name": acc2_name, "invites": invites, "admins": list(admins.keys()), "extra_clients": list(extra_clients.keys()), "backup_history": backup_history[-20:]}
+    initial = {"muted_chats": list(muted_chats), "protected_users": list(protected_users), "history": command_history, "chat_names": await get_chat_names(), "user_names": await get_user_names(), "acc1_name": (await client1.get_me()).first_name or "Аккаунт 1", "acc2_name": acc2_name, "invites": invites, "admins": list(admins.keys()), "extra_clients": list(extra_clients.keys()), "backup_history": backup_history[-20:], "backup_status": backup_status}
     await ws.send_str(json.dumps(initial, default=str, ensure_ascii=False))
     try:
         async for msg in ws:
@@ -1163,9 +1217,9 @@ async def main():
     asyncio.create_task(backup_loop())
 
     def shutdown_handler(signum, frame):
-        print("🔻 Завершение работы, сохраняю состояние...")
-        loop = asyncio.get_event_loop()
-        loop.run_until_complete(backup_state())
+        print("🔻 Завершение работы, сохраняю состояние локально...")
+        data = {"muted_chats": list(muted_chats), "protected_users": list(protected_users), "admins": admins, "extra_clients": {k: {"session": v["session"]} for k, v in extra_clients.items()}, "auto_reply_global": auto_reply_global, "auto_reply_chats": auto_reply_chats}
+        save_json("backup_local.json", data)
         os._exit(0)
     signal.signal(signal.SIGTERM, shutdown_handler)
 
