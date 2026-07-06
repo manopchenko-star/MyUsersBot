@@ -24,7 +24,7 @@ ADMIN_USER = os.environ.get("ADMIN_USER", "admin")
 ADMIN_PASS = os.environ.get("ADMIN_PASSWORD", "Anopchenko2011")
 ACC2_DISPLAY_NAME = os.environ.get("ACC2_DISPLAY_NAME", "")
 OWNER_USERNAME = os.environ.get("OWNER_USERNAME", "Anopchenko2011")
-BACKUP_INTERVAL = int(os.environ.get("BACKUP_INTERVAL", "300"))  # секунд (5 мин)
+BACKUP_INTERVAL = int(os.environ.get("BACKUP_INTERVAL", "300"))
 BACKUP_KEY = os.environ.get("BACKUP_KEY", "")
 DATA_FILE = Path("userbot_data.json")
 LOG_FILE = Path("command_history.json")
@@ -34,8 +34,8 @@ REMIND_FILE = Path("reminds.json")
 INVITES_FILE = Path("invites.json")
 ADMINS_FILE = Path("admins.json")
 HISTORY_FILE = Path("backup_history.json")
+BACKUP_LOCAL = Path("backup_local.json")
 
-# Ключ шифрования
 if BACKUP_KEY:
     ENCRYPTION_KEY = base64.urlsafe_b64encode(hashlib.sha256(BACKUP_KEY.encode()).digest())
 else:
@@ -138,23 +138,39 @@ async def backup_state():
     error_text = ""
     if not success:
         error_text = "Не удалось загрузить файлы на 0x0.st"
+        print(f"❌ {error_text}")
     else:
+        # Отправляем зашифрованный файл другу в избранное
         try:
-            async for msg in client2.iter_messages('me', from_user='me', limit=5):
-                if msg.file and msg.file.name == "backup.enc":
-                    await msg.delete()
+            # Удаляем предыдущие файлы, если они есть
+            try:
+                async for msg in client2.iter_messages('me', from_user='me', limit=10):
+                    if msg.file and msg.file.name == "backup.enc":
+                        await msg.delete()
+                        print("🗑 Старый backup.enc удалён у друга")
+            except Exception as del_err:
+                print(f"⚠️ Не удалось удалить старые файлы у друга: {del_err}")
+            # Отправляем новый файл
             await client2.send_file('me', io.BytesIO(encrypted), file_name="backup.enc")
+            print("✅ Файл backup.enc отправлен другу в избранное")
         except Exception as e:
             error_text = f"Ошибка отправки другу: {e}"
             success = False
+            print(f"❌ {error_text}")
 
+        # Уведомление владельцу
         try:
             owner = await client1.get_entity(OWNER_USERNAME)
-            async for msg in client1.iter_messages(owner.id, from_user='me', limit=10):
-                if msg.text and "✅ Бэкап сделан" in msg.text:
-                    await msg.delete()
+            # Удаляем старые уведомления
+            try:
+                async for msg in client1.iter_messages(owner.id, from_user='me', limit=10):
+                    if msg.text and "✅ Бэкап сделан" in msg.text:
+                        await msg.delete()
+            except: pass
             await client1.send_message(owner.id, "✅ Бэкап сделан")
-        except: pass
+            print(f"📢 Уведомление отправлено владельцу {OWNER_USERNAME}")
+        except Exception as e:
+            print(f"⚠️ Не удалось уведомить владельца: {e}")
 
     entry = {
         "time": datetime.now().isoformat(),
@@ -185,7 +201,7 @@ async def restore_state():
     except Exception as e:
         print(f"⚠️ Ошибка восстановления: {e}")
     if not data:
-        local = load_json("backup_local.json", None)
+        local = load_json(BACKUP_LOCAL, None)
         if local: data = local
     if not data: return
     muted_chats = set(data.get("muted_chats", []))
