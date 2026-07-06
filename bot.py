@@ -15,6 +15,7 @@ from googlesearch import search as google_search
 
 AudioSegment.converter = "/opt/render/project/src/ffmpeg"
 
+# ---------- Конфигурация ----------
 API_ID = int(os.environ["API_ID"])
 API_HASH = os.environ["API_HASH"]
 SESSION_STRING_1 = os.environ["SESSION_STRING"]
@@ -302,6 +303,7 @@ async def init_protected_users():
     except Exception as e: print(f"⚠️ Не удалось найти владельца {OWNER_USERNAME}: {e}")
     save_state(); await broadcast_state(); await backup_state()
 
+# ---------- Обработчики команд ----------
 def register_handlers(client_instance):
     @client_instance.on(events.NewMessage(outgoing=True, pattern=r'^\.mute$'))
     async def mute_cmd(event):
@@ -673,6 +675,7 @@ if bot:
                 pending_registrations.pop(token)
             await event.edit("🚫 Вход отклонён.", buttons=None)
 
+# ---------- HTML-шаблоны ----------
 HTML_LOGIN = """<html><head><meta charset="utf-8"><title>Вход</title>
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Montserrat:wght@300;600&display=swap');
@@ -777,7 +780,7 @@ HTML_DASHBOARD = """<!DOCTYPE html>
     .tab-pane { display: none; }
     .tab-pane.active { display: block; }
     .list-group-item { background: var(--card); border: 1px solid rgba(255,255,255,0.05); border-radius: 8px; padding: 0.7rem 1rem; margin-bottom: 0.5rem; display: flex; justify-content: space-between; align-items: center; }
-    .btn-custom { background: var(--accent); color: white; border: none; padding: 0.4rem 0.8rem; border-radius: 6px; cursor: pointer; font-size: 0.8rem; }
+    .btn-custom { background: var(--accent); color: white; border: none; padding: 0.4rem 0.8rem; border-radius: 6px; cursor: pointer; font-size: 0.8rem; text-decoration: none; display: inline-block; }
     table { width: 100%; border-collapse: collapse; margin-top: 1rem; }
     th, td { padding: 0.6rem; border-bottom: 1px solid rgba(255,255,255,0.05); text-align: left; }
     th { color: var(--accent); }
