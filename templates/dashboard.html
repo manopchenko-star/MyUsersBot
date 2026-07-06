@@ -1,0 +1,396 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Userbot Panel</title>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Montserrat:wght@300;400;600&display=swap');
+    :root { --bg: linear-gradient(135deg, #0a0a0a, #1a1a2e, #0a0a0a); --card: rgba(19,19,31,0.8); --text: #e0e0e0; --accent: #e94560; }
+    .light { --bg: #f0f0f0; --card: rgba(255,255,255,0.9); --text: #222; --accent: #e94560; }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: var(--bg); background-size: 400% 400%; animation: gradientBG 15s ease infinite; color: var(--text); font-family: 'Montserrat', sans-serif; }
+    @keyframes gradientBG { 0%{background-position:0% 50%} 50%{background-position:100% 50%} 100%{background-position:0% 50%} }
+    .navbar { display: flex; align-items: center; justify-content: space-between; background: rgba(19,19,31,0.9); backdrop-filter: blur(10px); padding: 0.8rem 2rem; border-bottom: 1px solid rgba(233,69,96,0.3); }
+    .navbar-brand { font-size: 1.5rem; font-weight: 600; color: #e94560; text-decoration: none; }
+    .nav-info { display: flex; gap: 1.5rem; align-items: center; }
+    .nav-info span { opacity: 0.8; }
+    .logout-btn { background: rgba(233,69,96,0.2); padding: 0.4rem 0.8rem; border-radius: 6px; color: #e94560; text-decoration: none; }
+    .tabs { display: flex; gap: 0.5rem; padding: 1rem 2rem; background: rgba(19,19,31,0.8); overflow-x: auto; }
+    .tabs button { background: transparent; color: #aaa; border: none; padding: 0.5rem 1rem; border-radius: 8px; cursor: pointer; }
+    .tabs button.active { background: var(--accent); color: white; }
+    .content { padding: 2rem; }
+    .tab-pane { display: none; }
+    .tab-pane.active { display: block; }
+    .list-group-item { background: var(--card); border: 1px solid rgba(255,255,255,0.05); border-radius: 8px; padding: 0.7rem 1rem; margin-bottom: 0.5rem; display: flex; justify-content: space-between; align-items: center; }
+    .btn-custom { background: var(--accent); color: white; border: none; padding: 0.4rem 0.8rem; border-radius: 6px; cursor: pointer; font-size: 0.8rem; text-decoration: none; display: inline-block; }
+    table { width: 100%; border-collapse: collapse; margin-top: 1rem; }
+    th, td { padding: 0.6rem; border-bottom: 1px solid rgba(255,255,255,0.05); text-align: left; }
+    th { color: var(--accent); }
+    .badge { padding: 0.2rem 0.5rem; border-radius: 4px; font-size: 0.75rem; }
+    .badge-ok { background: #238636; }
+    .badge-error { background: #da3633; }
+    .notification { position: fixed; top: 1rem; right: 1rem; background: #238636; color: white; padding: 0.8rem 1.2rem; border-radius: 8px; display: none; z-index: 999; }
+    input, select, textarea { background: #13131f; color: white; border: 1px solid #30363d; border-radius: 6px; padding: 0.5rem; }
+    @media (max-width: 768px) { .tabs { flex-wrap: nowrap; } }
+  </style>
+</head>
+<body class="{theme_class}">
+  <nav class="navbar">
+    <a class="navbar-brand" href="#">🤖 Userbot Panel</a>
+    <div class="nav-info">
+      <select id="activeAccountSelect" onchange="setActiveAccount(this.value)" style="background:#13131f;color:white;"></select>
+      <button class="btn-custom" onclick="toggleTheme()">🌓 Тема</button>
+      <span><i class="far fa-user"></i> {user}</span>
+      <a href="/logout" class="logout-btn"><i class="fas fa-sign-out-alt"></i></a>
+    </div>
+  </nav>
+  <div class="tabs">
+    <button class="active" data-tab="muted">🔇 Чаты в муте</button>
+    <button data-tab="protected">🛡 Защищённые</button>
+    <button data-tab="commands">⚡ Команды</button>
+    <button data-tab="history">📜 История</button>
+    <button data-tab="admins">👥 Админы</button>
+    <button data-tab="accounts">👤 Аккаунты</button>
+    <button data-tab="backup">📦 Бэкап</button>
+    <button data-tab="notes">📝 Заметки</button>
+    <button data-tab="afk">⏳ AFK</button>
+    <button data-tab="filters">🔍 Фильтры</button>
+    <button data-tab="schedule">⏰ Планировщик</button>
+    <button data-tab="stats">📊 Статистика</button>
+  </div>
+  <div class="content">
+    <div id="muted" class="tab-pane active">
+      <div style="margin-bottom:1rem;">
+        <input type="text" id="massMuteInput" placeholder="ID чатов через запятую">
+        <button class="btn-custom" onclick="massMute()">Замутить все</button>
+        <button class="btn-custom" onclick="massUnmute()">Размутить все</button>
+      </div>
+      <div id="mutedList"></div>
+    </div>
+    <div id="protected" class="tab-pane"><div id="protectedList"></div></div>
+    <div id="commands" class="tab-pane">
+      <form action="/send_cmd" method="post" style="display: grid; gap: 0.8rem; max-width: 500px;">
+        <select name="account" id="accountSelect"></select>
+        <input name="target" placeholder="Чат (username или ID, пусто = Избранное)">
+        <select name="command" id="cmdSelect">
+          <option value=".mute">.mute</option><option value=".unmute">.unmute</option><option value=".spam">.spam</option><option value=".ping">.ping</option><option value=".purge">.purge</option><option value=".clearall">.clearall</option><option value=".stats">.stats</option><option value=".tr">.tr</option><option value=".avto">.avto</option><option value=".help">.help</option><option value=".search">.search</option>
+        </select>
+        <input name="args" placeholder="Аргументы">
+        <button type="submit" class="btn-custom" style="padding:0.6rem;">Отправить</button>
+      </form>
+    </div>
+    <div id="history" class="tab-pane">
+      <button class="btn-custom" onclick="exportCSV()" style="margin-bottom:0.5rem;">Экспорт CSV</button>
+      <table><thead><tr><th>Время</th><th>Источник</th><th>Пользователь</th><th>Команда</th><th>Цель</th></tr></thead><tbody id="historyBody"></tbody></table>
+    </div>
+    <div id="admins" class="tab-pane">
+      <form action="/add_admin" method="post" style="display:flex; gap:0.5rem; margin-bottom:1rem;">
+        <input name="username" placeholder="Логин" required autocomplete="off">
+        <input name="password" type="password" placeholder="Пароль" required autocomplete="new-password">
+        <select name="role"><option value="admin">Админ</option><option value="readonly">Чтение</option></select>
+        <button type="submit" class="btn-custom">Добавить</button>
+      </form>
+      <div id="adminsList"></div>
+    </div>
+    <div id="accounts" class="tab-pane">
+      <form action="/add_account" method="post" style="display:flex; flex-direction:column; gap:0.5rem; max-width:500px;">
+        <input name="name" placeholder="Имя аккаунта" required>
+        <textarea name="session_string" placeholder="SESSION_STRING" required style="height:100px;"></textarea>
+        <button type="submit" class="btn-custom">Подключить</button>
+      </form>
+      <div id="extraAccountsList" style="margin-top:1rem;"></div>
+    </div>
+    <div id="backup" class="tab-pane">
+      <button class="btn-custom" onclick="createBackup()">Создать бэкап</button>
+      <div style="margin:1rem 0;">
+        <a href="/download/backup/enc" class="btn-custom">Скачать зашифрованный</a>
+        <a href="/download/backup/dec" class="btn-custom">Скачать расшифрованный</a>
+      </div>
+      <table><thead><tr><th>Время</th><th>Статус</th></tr></thead><tbody id="backupHistoryBody"></tbody></table>
+    </div>
+    <div id="notes" class="tab-pane">
+      <textarea id="notesText" style="width:100%; height:300px;"></textarea>
+      <button class="btn-custom" onclick="saveNotes()">Сохранить</button>
+    </div>
+    <div id="afk" class="tab-pane">
+      <div id="afkList"></div>
+    </div>
+    <div id="filters" class="tab-pane">
+      <h5>Чёрный список слов (глобальный)</h5>
+      <div id="blacklistWords"></div>
+      <input id="newBlacklistWord" placeholder="Слово"><button class="btn-custom" onclick="addBlacklistWord()">Добавить</button>
+      <h5>Фильтры чатов</h5>
+      <div id="filtersList"></div>
+      <input id="filterChatId" placeholder="ID чата"><input id="filterWord" placeholder="Слово"><select id="filterAction"><option value="delete">Удалить</option><option value="mute">Замутить</option></select>
+      <button class="btn-custom" onclick="addFilter()">Добавить</button>
+    </div>
+    <div id="schedule" class="tab-pane">
+      <form id="scheduleForm">
+        <input type="datetime-local" id="schedTime" required>
+        <select id="schedAccount"></select>
+        <input id="schedTarget" placeholder="Чат (пусто=Избранное)">
+        <select id="schedCommand">
+          <option value=".spam">.spam</option><option value=".ping">.ping</option><option value=".mute">.mute</option><option value=".unmute">.unmute</option>
+        </select>
+        <input id="schedArgs" placeholder="Аргументы">
+        <button type="button" class="btn-custom" onclick="addSchedule()">Добавить задачу</button>
+      </form>
+      <div id="scheduleList"></div>
+    </div>
+    <div id="stats" class="tab-pane">
+      <canvas id="statsChart" width="400" height="200"></canvas>
+    </div>
+  </div>
+  <div id="notification" class="notification"></div>
+  <script>
+    var ws, fullHistory=[], acc1Name="Аккаунт 1", acc2Name="Аккаунт 2", extraAccounts=[], backupHistory=[], afkUsers={}, notes="", filters={}, blacklist=[], schedule=[], activeAccount="1", theme="dark";
+
+    function showNotification(text, isError) {
+      isError = isError || false;
+      var n = document.getElementById('notification');
+      n.textContent = text;
+      n.className = 'notification' + (isError ? ' error' : '');
+      n.style.display = 'block';
+      setTimeout(function() { n.style.display = 'none'; }, 4000);
+    }
+
+    window.addEventListener('load', function() {
+      connectWS();
+      document.getElementById('activeAccountSelect').addEventListener('change', function() { setActiveAccount(this.value); });
+    });
+
+    function connectWS() {
+      ws = new WebSocket('wss://' + location.host + '/ws');
+      ws.onmessage = function(e) { updateUI(JSON.parse(e.data)); };
+      ws.onclose = function() { setTimeout(connectWS, 3000); };
+    }
+
+    function updateUI(data) {
+      acc1Name = data.acc1_name || 'Аккаунт 1';
+      acc2Name = data.acc2_name;
+      extraAccounts = data.extra_clients || [];
+      var sel = document.getElementById('accountSelect');
+      sel.innerHTML = '';
+      sel.add(new Option(acc1Name, '1'));
+      if (acc2Name) sel.add(new Option(acc2Name, '2'));
+      extraAccounts.forEach(function(name) { sel.add(new Option(name, name)); });
+      var activeSel = document.getElementById('activeAccountSelect');
+      activeSel.innerHTML = '';
+      activeSel.add(new Option(acc1Name, '1'));
+      if (acc2Name) activeSel.add(new Option(acc2Name, '2'));
+      extraAccounts.forEach(function(name) { activeSel.add(new Option(name, name)); });
+      activeSel.value = data.active_account || "1";
+      activeAccount = data.active_account || "1";
+
+      fullHistory = data.history || [];
+      backupHistory = data.backup_history || [];
+      afkUsers = data.afk_users || {};
+      notes = data.notes || "";
+      filters = data.filters || {};
+      blacklist = data.blacklist || [];
+      schedule = data.schedule || [];
+      theme = data.theme || "dark";
+      document.body.className = theme;
+      document.getElementById('notesText').value = notes;
+
+      renderMuted(data);
+      renderProtected(data);
+      renderHistory();
+      renderBackupHistory();
+      renderAdmins(data);
+      renderExtraAccounts();
+      renderAfk();
+      renderFilters();
+      renderSchedule();
+      updateStatsChart();
+    }
+
+    function renderMuted(data) {
+      var html = '';
+      for (var id in data.chat_names) {
+        html += '<div class="list-group-item">' + data.chat_names[id] + ' <button class="btn-custom" onclick="unmuteChat(' + id + ')">Размутить</button></div>';
+      }
+      document.getElementById('mutedList').innerHTML = html || 'Нет чатов';
+    }
+
+    function renderProtected(data) {
+      var html = '';
+      for (var id in data.user_names) {
+        html += '<div class="list-group-item">' + data.user_names[id] + '</div>';
+      }
+      document.getElementById('protectedList').innerHTML = html || 'Нет';
+    }
+
+    function renderHistory() {
+      var html = '';
+      fullHistory.slice(-20).forEach(function(e) {
+        html += '<tr><td>' + e.time.substr(11,8) + '</td><td>' + e.source + '</td><td>' + e.user_name + '</td><td>' + e.command + '</td><td>' + (e.target_name||'') + '</td></tr>';
+      });
+      document.getElementById('historyBody').innerHTML = html || '<tr><td colspan="5">Нет записей</td></tr>';
+    }
+
+    function renderBackupHistory() {
+      var html = '';
+      backupHistory.forEach(function(e) {
+        var statusHtml = e.success ? '<span class="badge badge-ok">✅</span>' : '<span class="badge badge-error">❌</span>';
+        html += '<tr><td>' + new Date(e.time).toLocaleString() + '</td><td>' + statusHtml + '</td></tr>';
+      });
+      document.getElementById('backupHistoryBody').innerHTML = html || '<tr><td colspan="2">Нет бэкапов</td></tr>';
+    }
+
+    function renderAdmins(data) {
+      var html = '';
+      if (data.admins) data.admins.forEach(function(user) {
+        html += '<div class="list-group-item">' + user + ' <a href="/delete_admin?user=' + user + '" class="btn-custom">Удалить</a></div>';
+      });
+      document.getElementById('adminsList').innerHTML = html || 'Нет админов';
+    }
+
+    function renderExtraAccounts() {
+      var html = '';
+      extraAccounts.forEach(function(name) {
+        html += '<div class="list-group-item">' + name + ' <a href="/remove_account?name=' + name + '" class="btn-custom">Отключить</a></div>';
+      });
+      document.getElementById('extraAccountsList').innerHTML = html || 'Нет';
+    }
+
+    function renderAfk() {
+      var html = '';
+      for (var uid in afkUsers) {
+        html += '<div class="list-group-item">' + uid + ': ' + afkUsers[uid] + ' <button class="btn-custom" onclick="removeAfk(\'' + uid + '\')">Снять</button></div>';
+      }
+      document.getElementById('afkList').innerHTML = html || 'Нет AFK';
+    }
+
+    function renderFilters() {
+      var blackHtml = blacklist.map(function(w) { return '<span class="badge badge-error">' + w + ' <i onclick="removeBlacklistWord(\'' + w + '\')" style="cursor:pointer;">×</i></span>'; }).join(' ');
+      document.getElementById('blacklistWords').innerHTML = blackHtml || 'Нет слов';
+      var filterHtml = '';
+      for (var chat in filters) {
+        filters[chat].forEach(function(rule) {
+          filterHtml += '<div class="list-group-item">Чат ' + chat + ': слово "' + rule.word + '" -> ' + rule.action + ' <button class="btn-custom" onclick="removeFilter(\'' + chat + '\', \'' + rule.word + '\')">Удалить</button></div>';
+        });
+      }
+      document.getElementById('filtersList').innerHTML = filterHtml || 'Нет фильтров';
+    }
+
+    function renderSchedule() {
+      var html = '';
+      schedule.forEach(function(task, idx) {
+        html += '<div class="list-group-item">' + task.time + ' - ' + task.command + ' ' + (task.args||'') + ' в ' + (task.target||'Избранное') + ' <button class="btn-custom" onclick="deleteSchedule(' + idx + ')">Удалить</button></div>';
+      });
+      document.getElementById('scheduleList').innerHTML = html || 'Нет задач';
+    }
+
+    var statsChartInstance;
+    function updateStatsChart() {
+      var ctx = document.getElementById('statsChart');
+      if (!ctx) return;
+      ctx = ctx.getContext('2d');
+      var days = {};
+      fullHistory.forEach(function(e) {
+        var day = e.time.substr(0,10);
+        days[day] = (days[day]||0) + 1;
+      });
+      var labels = Object.keys(days).sort();
+      var values = labels.map(function(d) { return days[d]; });
+      if (window.statsChartInstance) window.statsChartInstance.destroy();
+      window.statsChartInstance = new Chart(ctx, {
+        type: 'line',
+        data: { labels: labels, datasets: [{ label: 'Команды по дням', data: values, borderColor: '#e94560' }] }
+      });
+    }
+
+    async function unmuteChat(id) {
+      await fetch('/unmute?chat_id='+id+'&account='+activeAccount);
+      showNotification('Чат размучен');
+    }
+    async function createBackup() {
+      await fetch('/backup_now');
+      showNotification('Бэкап создан');
+    }
+    function exportCSV() {
+      var csv = "time,source,user,command,target\n";
+      fullHistory.forEach(function(e) { csv += e.time + ',' + e.source + ',' + e.user_name + ',' + e.command + ',' + (e.target_name||'') + '\n'; });
+      var blob = new Blob([csv], {type: 'text/csv'});
+      var url = URL.createObjectURL(blob);
+      var a = document.createElement('a');
+      a.href = url;
+      a.download = 'history.csv';
+      a.click();
+    }
+    async function saveNotes() {
+      var text = document.getElementById('notesText').value;
+      await fetch('/api/notes', {method: 'POST', body: new URLSearchParams({notes: text})});
+      showNotification('Заметки сохранены');
+    }
+    async function removeAfk(uid) {
+      await fetch('/api/afk/remove?uid=' + uid);
+    }
+    async function addBlacklistWord() {
+      var word = document.getElementById('newBlacklistWord').value.trim();
+      if (word) await fetch('/api/blacklist/add', {method: 'POST', body: new URLSearchParams({word: word})});
+    }
+    async function removeBlacklistWord(word) {
+      await fetch('/api/blacklist/remove?word=' + word);
+    }
+    async function addFilter() {
+      var chat = document.getElementById('filterChatId').value;
+      var word = document.getElementById('filterWord').value;
+      var action = document.getElementById('filterAction').value;
+      if (chat && word) await fetch('/api/filters/add', {method: 'POST', body: new URLSearchParams({chat: chat, word: word, action: action})});
+    }
+    async function removeFilter(chat, word) {
+      await fetch('/api/filters/remove?chat=' + chat + '&word=' + word);
+    }
+    async function addSchedule() {
+      var time = document.getElementById('schedTime').value;
+      var account = document.getElementById('schedAccount').value || "1";
+      var target = document.getElementById('schedTarget').value || "me";
+      var command = document.getElementById('schedCommand').value;
+      var args = document.getElementById('schedArgs').value;
+      await fetch('/api/schedule/add', {method: 'POST', body: new URLSearchParams({time: time, account: account, target: target, command: command, args: args})});
+    }
+    async function deleteSchedule(idx) {
+      await fetch('/api/schedule/delete?idx=' + idx);
+    }
+    async function setActiveAccount(acc) {
+      activeAccount = acc;
+      await fetch('/api/active_account', {method: 'POST', body: new URLSearchParams({account: acc})});
+    }
+    async function toggleTheme() {
+      var newTheme = theme === 'dark' ? 'light' : 'dark';
+      theme = newTheme;
+      document.body.className = theme;
+      await fetch('/api/theme', {method: 'POST', body: new URLSearchParams({theme: newTheme})});
+    }
+    async function massMute() {
+      var ids = document.getElementById('massMuteInput').value.split(',').map(function(s) { return s.trim(); }).filter(Boolean);
+      for (var i = 0; i < ids.length; i++) {
+        await fetch('/api/mass_mute?chat_id=' + ids[i]);
+      }
+      showNotification('Массовый мут выполнен');
+    }
+    async function massUnmute() {
+      var ids = document.getElementById('massMuteInput').value.split(',').map(function(s) { return s.trim(); }).filter(Boolean);
+      for (var i = 0; i < ids.length; i++) {
+        await fetch('/api/mass_unmute?chat_id=' + ids[i]);
+      }
+      showNotification('Массовый размут выполнен');
+    }
+
+    document.querySelectorAll('.tabs button').forEach(function(btn) {
+      btn.addEventListener('click', function() {
+        document.querySelectorAll('.tabs button').forEach(function(b) { b.classList.remove('active'); });
+        this.classList.add('active');
+        document.querySelectorAll('.tab-pane').forEach(function(p) { p.classList.remove('active'); });
+        document.getElementById(this.dataset.tab).classList.add('active');
+        if (this.dataset.tab === 'stats') updateStatsChart();
+      });
+    });
+  </script>
+</body>
+</html>

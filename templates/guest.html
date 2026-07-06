@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <title>Гостевой просмотр</title>
+  <style>
+    body { background: #0a0a0a; color: #e0e0e0; font-family: sans-serif; padding: 20px; }
+    ul { list-style: none; padding: 0; }
+  </style>
+</head>
+<body>
+  <h1>Состояние бота</h1>
+  <div id="content"></div>
+  <script>
+    var ws = new WebSocket('wss://' + location.host + '/guest-ws?key=' + (new URL(location)).searchParams.get('key'));
+    ws.onmessage = function(event) {
+      var data = JSON.parse(event.data);
+      var html = '<h3>Чаты в муте:</h3><ul>';
+      for (var id in data.chat_names) html += '<li>' + data.chat_names[id] + '</li>';
+      html += '</ul><h3>Защищённые:</h3><ul>';
+      for (var id in data.user_names) html += '<li>' + data.user_names[id] + '</li>';
+      html += '</ul><h3>История:</h3><table border="1" cellpadding="4"><tr><th>Время</th><th>Команда</th></tr>';
+      data.history.forEach(function(e) { html += '<tr><td>' + e.time.substr(11,8) + '</td><td>' + e.command + '</td></tr>'; });
+      html += '</table>';
+      document.getElementById('content').innerHTML = html;
+    };
+  </script>
+</body>
+</html>
