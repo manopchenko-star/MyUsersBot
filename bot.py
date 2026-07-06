@@ -291,11 +291,351 @@ async def init_protected_users():
     except Exception as e: print(f"⚠️ Не удалось найти владельца {OWNER_USERNAME}: {e}")
     save_state(); await broadcast_state(); await backup_state()
 
-# ---------- Обработчики команд (полный набор) ----------
+# ---------- Обработчики команд ----------
 def register_handlers(client_instance):
-    # все команды (mute, unmute, avto, spam, ping, purge, save, get, stats, tr, addfriend, delfriend, listfriends, clearall, history, help, qr, weather, tts, sticker, stt, shutdown, restart, afk, unafk, search, filter_handler, auto_read_handler)
-    # (полный код есть в предыдущих полных версиях, здесь он не дублируется ради длины, но должен присутствовать)
-    pass
+    @client_instance.on(events.NewMessage(outgoing=True, pattern=r'^\.mute$'))
+    async def mute_cmd(event):
+        chat = await event.get_chat()
+        if hasattr(chat, 'broadcast') and chat.broadcast: return
+        muted_chats.add(event.chat_id); save_state(); await event.delete()
+        user_name = await resolve_name(event.sender_id); target_name = await resolve_chat_name(event.chat_id)
+        log_command(event.sender_id, ".mute", source="Telegram", target_id=event.chat_id, user_name=user_name, target_name=target_name, result="ok")
+        text = "🔇 <b>Пользователь заглушен</b>\nВсе его сообщения будут <i>мгновенно удаляться</i>.\n\nНажмите кнопку ниже, чтобы размутить."
+        buttons = [Button.inline("🔊 Размутить", b"unmute")]
+        await event.client.send_message(event.chat_id, text, buttons=buttons, parse_mode='html')
+        await broadcast_state(); await backup_state()
+
+    @client_instance.on(events.NewMessage(outgoing=True, pattern=r'^\.unmute$'))
+    async def unmute_cmd(event):
+        muted_chats.discard(event.chat_id); save_state(); await event.delete()
+        user_name = await resolve_name(event.sender_id); target_name = await resolve_chat_name(event.chat_id)
+        log_command(event.sender_id, ".unmute", source="Telegram", target_id=event.chat_id, user_name=user_name, target_name=target_name, result="ok")
+        await event.client.send_message(event.chat_id, "🔊 <b>Мут снят.</b> Сообщения больше не удаляются.", parse_mode='html')
+        await broadcast_state(); await backup_state()
+
+    @client_instance.on(events.NewMessage(incoming=True))
+    async def delete_muted(event):
+        if event.chat_id in muted_chats and not event.out:
+            if event.sender_id not in protected_users:
+                try: await event.delete()
+                except: pass
+
+    @client_instance.on(events.CallbackQuery(data=b"unmute"))
+    async def unmute_callback(event):
+        muted_chats.discard(event.chat_id); save_state()
+        user_name = await resolve_name(event.sender_id); target_name = await resolve_chat_name(event.chat_id)
+        log_command(event.sender_id, "Размутил (кнопка)", source="Telegram", target_id=event.chat_id, user_name=user_name, target_name=target_name, result="ok")
+        await event.edit("🔊 <b>Мут снят.</b>", buttons=None, parse_mode='html')
+        await broadcast_state(); await backup_state()
+
+    @client_instance.on(events.NewMessage(outgoing=True, pattern=r'^\.avto(\s+all)?(?:\s+(.*))?'))
+    async def avto_cmd(event):
+        is_global = bool(event.pattern_match.group(1)); custom_text = event.pattern_match.group(2).strip() if event.pattern_match.group(2) else None
+        if is_global:
+            auto_reply_global['enabled'] = True
+            if custom_text: auto_reply_global['text'] = custom_text
+            await event.delete()
+            await event.client.send_message(event.chat_id if event.is_private else None, f"🌐 <b>Глобальный автоответчик включён.</b>\nТекст: {auto_reply_global['text']}", parse_mode='html')
+        else:
+            if not event.is_private: await event.reply("❌ Автоответчик для групп не поддерживается."); return
+            if custom_text is None: custom_text = "⏳ Привет! Я сейчас не в сети, отвечу позже."
+            auto_reply_chats[event.chat_id] = {'enabled': True, 'text': custom_text}
+            await event.delete()
+            await event.client.send_message(event.chat_id, f"✅ <b>Автоответчик включён в этом чате.</b>\nТекст: {custom_text}", parse_mode='html')
+
+    @client_instance.on(events.NewMessage(outgoing=True, pattern=r'^\.unavto(\s+all)?'))
+    async def unavto_cmd(event):
+        is_global = bool(event.pattern_match.group(1))
+        if is_global:
+            auto_reply_global['enabled'] = False; await event.delete()
+            if event.is_private: await event.client.send_message(event.chat_id, "🌐 <b>Глобальный автоответчик выключен.</b>", parse_mode='html')
+        else:
+            if not event.is_private: await event.reply("❌ Автоответчик для групп не поддерживается."); return
+            if event.chat_id in auto_reply_chats: del auto_reply_chats[event.chat_id]
+            await event.delete()
+            await event.client.send_message(event.chat_id, "❌ <b>Автоответчик выключен в этом чате.</b>", parse_mode='html')
+
+    @client_instance.on(events.NewMessage(incoming=True))
+    async def auto_reply_handler(event):
+        if event.out: return
+        chat_id = event.chat_id
+        if chat_id in muted_chats:
+            if event.sender_id not in protected_users:
+                try: await event.delete()
+                except: pass
+            return
+        chat_settings = auto_reply_chats.get(chat_id)
+        if chat_settings and chat_settings.get('enabled'):
+            reply_text = chat_settings.get('text')
+            if reply_text:
+                if last_replied.get(chat_id) == event.id: return
+                await asyncio.sleep(1); await event.client.send_message(chat_id, reply_text)
+                last_replied[chat_id] = event.id
+            return
+        if auto_reply_global['enabled']:
+            reply_text = auto_reply_global.get('text')
+            if reply_text:
+                if last_replied.get(chat_id) == event.id: return
+                await asyncio.sleep(1); await event.client.send_message(chat_id, reply_text)
+                last_replied[chat_id] = event.id
+
+    @client_instance.on(events.NewMessage(outgoing=True, pattern=r'^\.spam\s+(\d+)\s+(.*)'))
+    async def spam_cmd(event):
+        count = int(event.pattern_match.group(1)); text = event.pattern_match.group(2)
+        await event.delete()
+        user_name = await resolve_name(event.sender_id); target_name = await resolve_chat_name(event.chat_id)
+        log_command(event.sender_id, f".spam {count} {text}", source="Telegram", target_id=event.chat_id, user_name=user_name, target_name=target_name, result="ok")
+        if count > 50: await event.client.send_message(event.chat_id, "⚠️ Максимум 50 повторений за раз."); return
+        for _ in range(count): await event.client.send_message(event.chat_id, text); await asyncio.sleep(0.4)
+
+    @client_instance.on(events.NewMessage(outgoing=True, pattern=r'^\.ping$'))
+    async def ping_cmd(event):
+        start = time.time(); msg = await event.reply("🏓 Пинг..."); elapsed = (time.time() - start) * 1000
+        await msg.edit(f"🏓 Понг! `{elapsed:.1f}ms`")
+
+    @client_instance.on(events.NewMessage(outgoing=True, pattern=r'^\.purge(?:\s+(\d+))?'))
+    async def purge_cmd(event):
+        num = int(event.pattern_match.group(1)) if event.pattern_match.group(1) else 10
+        if num > 200: num = 200
+        await event.delete()
+        user_name = await resolve_name(event.sender_id); target_name = await resolve_chat_name(event.chat_id)
+        log_command(event.sender_id, f".purge {num}", source="Telegram", target_id=event.chat_id, user_name=user_name, target_name=target_name, result="ok")
+        deleted = 0
+        async for message in event.client.iter_messages(event.chat_id, from_user='me', limit=num):
+            try: await message.delete(); deleted += 1; await asyncio.sleep(0.5)
+            except: pass
+        tmp = await event.client.send_message(event.chat_id, f"🗑 Удалено {deleted} сообщений.")
+        await asyncio.sleep(3); await tmp.delete()
+
+    @client_instance.on(events.NewMessage(outgoing=True, pattern=r'^\.save\s+(.*)'))
+    async def save_cmd(event):
+        text = event.pattern_match.group(1)
+        await event.client.send_message('me', f"📌 Заметка:\n{text}")
+        await event.reply("✅ Заметка сохранена в «Избранное».")
+
+    @client_instance.on(events.NewMessage(outgoing=True, pattern=r'^\.get$'))
+    async def get_cmd(event):
+        async for msg in event.client.iter_messages('me', limit=20):
+            if msg.text and msg.text.startswith("📌"):
+                await event.client.send_message(event.chat_id, msg.text); return
+        await event.reply("❌ Нет сохранённых заметок.")
+
+    @client_instance.on(events.NewMessage(outgoing=True, pattern=r'^\.stats$'))
+    async def stats_cmd(event):
+        chat = await event.get_chat()
+        if hasattr(chat, 'broadcast') and chat.broadcast: await event.reply("❌ Команда недоступна для каналов."); return
+        participants_count = 0
+        try: participants_count = (await event.client.get_participants(chat, limit=0)).total
+        except: pass
+        text = f"📊 <b>Статистика чата</b>\nНазвание: {chat.title}\nID: {chat.id}\nТип: {'Супергруппа' if chat.megagroup else 'Группа' if chat.broadcast else 'ЛС'}\nУчастников: {participants_count}"
+        await event.reply(text, parse_mode='html')
+
+    @client_instance.on(events.NewMessage(outgoing=True, pattern=r'^\.tr\s+([a-z]{2})\s+(.*)'))
+    async def translate_cmd(event):
+        target_lang = event.pattern_match.group(1); text = event.pattern_match.group(2)
+        try:
+            translated = GoogleTranslator(source='auto', target=target_lang).translate(text)
+            await event.reply(f"🌐 Перевод ({target_lang}):\n{translated}")
+        except Exception as e: await event.reply(f"❌ Ошибка перевода: {e}")
+
+    @client_instance.on(events.NewMessage(outgoing=True, pattern=r'^\.addfriend$'))
+    async def addfriend_cmd(event):
+        if not event.is_private: await event.reply("❌ Команда .addfriend работает только в личных сообщениях."); return
+        chat = await event.get_chat(); friend_id = chat.id
+        if friend_id == event.sender_id: await event.reply("❌ Нельзя добавить самого себя (вы уже защищены)."); return
+        protected_users.add(friend_id); save_state()
+        await event.reply("✅ Пользователь добавлен в список защищённых от мута.")
+        await backup_state()
+
+    @client_instance.on(events.NewMessage(outgoing=True, pattern=r'^\.delfriend$'))
+    async def delfriend_cmd(event):
+        if not event.is_private: await event.reply("❌ Команда .delfriend работает только в личных сообщениях."); return
+        chat = await event.get_chat(); friend_id = chat.id
+        me = await event.client.get_me()
+        if friend_id == me.id: await event.reply("❌ Нельзя удалить владельца из защиты."); return
+        try:
+            owner = await client1.get_entity(OWNER_USERNAME)
+            if friend_id == owner.id: await event.reply("❌ Создатель не может быть удалён из защиты."); return
+        except: pass
+        if friend_id in protected_users: protected_users.discard(friend_id); save_state(); await event.reply("✅ Пользователь удалён из списка защиты.")
+        else: await event.reply("❌ Пользователь не найден в списке защиты.")
+        await backup_state()
+
+    @client_instance.on(events.NewMessage(outgoing=True, pattern=r'^\.listfriends$'))
+    async def listfriends_cmd(event):
+        if not protected_users: await event.reply("Список защиты пуст."); return
+        lines = ["🛡 <b>Защищённые пользователи (не мутаются):</b>"]
+        for uid in protected_users:
+            try:
+                user = await event.client.get_entity(uid)
+                name = f"@{user.username}" if user.username else f"{user.first_name} (ID: {uid})"
+            except: name = f"ID: {uid}"
+            lines.append(f"• {name}")
+        await event.reply("\n".join(lines), parse_mode='html')
+
+    @client_instance.on(events.NewMessage(outgoing=True, pattern=r'^\.clearall$'))
+    async def clearall_cmd(event):
+        await event.delete()
+        user_name = await resolve_name(event.sender_id); target_name = await resolve_chat_name(event.chat_id)
+        log_command(event.sender_id, ".clearall", source="Telegram", target_id=event.chat_id, user_name=user_name, target_name=target_name, result="ok")
+        chat = await event.get_chat()
+        if hasattr(chat, 'broadcast') and chat.broadcast: await event.reply("❌ В канале невозможно очистить сообщения."); return
+        deleted = 0
+        async for msg in event.client.iter_messages(event.chat_id):
+            try: await msg.delete(); deleted += 1; await asyncio.sleep(0.5)
+            except: pass
+        tmp = await event.client.send_message(event.chat_id, f"🗑 Удалено {deleted} сообщений.")
+        await asyncio.sleep(3); await tmp.delete()
+
+    @client_instance.on(events.NewMessage(outgoing=True, pattern=r'^\.history$'))
+    async def history_cmd(event):
+        if not command_history: await event.reply("📜 История команд пуста."); return
+        text = "📜 <b>Последние команды</b>:\n"
+        for entry in command_history[-10:]:
+            text += f"• {entry['time'][:19]} — {entry['source']} {entry['user_name']}: {entry['command']} → {entry['target_name']}\n"
+        await event.reply(text, parse_mode='html')
+
+    @client_instance.on(events.NewMessage(outgoing=True, pattern=r'^\.help$'))
+    async def help_cmd(event):
+        await event.delete()
+        text = (
+            "📖 <b>Список команд юзербота:</b>\n\n"
+            "<b>.mute</b> — заглушить чат\n<b>.unmute</b> — снять мут\n<b>.clearall</b> — удалить все сообщения в чате\n"
+            "<b>.avto</b> / .avto all / .unavto — автоответчик\n<b>.spam N текст</b> — повторить N раз\n"
+            "<b>.ping</b> — пинг\n<b>.purge [N]</b> — удалить свои последние N сообщений\n<b>.save текст</b> / .get — заметки\n"
+            "<b>.stats</b> — статистика чата\n<b>.tr код текст</b> — перевод\n<b>.addfriend</b> / .delfriend / .listfriends\n"
+            "<b>.history</b> — история последних команд\n<b>.stt</b> — распознать голосовое сообщение\n<b>.qr текст</b> — QR-код\n"
+            "<b>.weather город</b> — погода\n<b>.tts текст</b> — голосовое сообщение\n<b>.sticker</b> — случайный стикер\n"
+            "<b>.search запрос</b> — поиск в Google\n<b>.afk [причина]</b> / .unafk — режим AFK\n<b>.help</b> — это сообщение"
+        )
+        await event.client.send_message(event.chat_id, text, parse_mode='html')
+
+    @client_instance.on(events.NewMessage(outgoing=True, pattern=r'^\.qr\s+(.*)'))
+    async def qr_cmd(event):
+        text = event.pattern_match.group(1); await event.delete()
+        img = qrcode_lib.make(text); buf = io.BytesIO(); img.save(buf, format='PNG'); buf.seek(0)
+        await event.client.send_file(event.chat_id, buf, caption=f"QR: {text}")
+
+    @client_instance.on(events.NewMessage(outgoing=True, pattern=r'^\.weather\s+(.*)'))
+    async def weather_cmd(event):
+        city = event.pattern_match.group(1).strip(); await event.delete()
+        url = f"https://wttr.in/{urllib.parse.quote(city)}?format=%C+%t+%w&lang=ru"
+        try:
+            async with http_session.get(url, timeout=15) as resp:
+                t = await resp.text(); await event.client.send_message(event.chat_id, f"🌤 Погода в {city}:\n{t.strip()}")
+        except: await event.client.send_message(event.chat_id, "❌ Не удалось получить погоду.")
+
+    @client_instance.on(events.NewMessage(outgoing=True, pattern=r'^\.tts\s+(.*)'))
+    async def tts_cmd(event):
+        text = event.pattern_match.group(1); await event.delete()
+        try:
+            tts = gTTS(text, lang='ru'); buf = io.BytesIO(); tts.write_to_fp(buf); buf.seek(0)
+            await event.client.send_file(event.chat_id, buf, voice_note=True)
+        except Exception as e: await event.client.send_message(event.chat_id, f"❌ Ошибка синтеза речи: {e}")
+
+    @client_instance.on(events.NewMessage(outgoing=True, pattern=r'^\.sticker$'))
+    async def sticker_cmd(event):
+        sets = ["UtyaDuck", "HotCherry", "PigPeccary", "duckduckduck", "capoo_stickers"]
+        try:
+            sticker_set = await event.client.get_sticker_set(random.choice(sets))
+            if sticker_set.documents: await event.client.send_file(event.chat_id, random.choice(sticker_set.documents))
+            else: await event.reply("Не удалось загрузить стикер.")
+        except: await event.reply("❌ Ошибка получения стикера.")
+
+    @client_instance.on(events.NewMessage(outgoing=True, pattern=r'^\.stt$'))
+    async def stt_cmd(event):
+        if not event.reply_to_msg_id: await event.reply("❌ Ответьте на голосовое сообщение."); return
+        reply = await event.get_reply_message()
+        if not reply.voice and not (reply.audio and reply.audio.mime_type in ['audio/ogg', 'audio/mp4']):
+            await event.reply("❌ Это не голосовое сообщение."); return
+        await event.reply("🎙 Распознаю речь...")
+        try:
+            with tempfile.NamedTemporaryFile(suffix='.ogg', delete=False) as tmp:
+                await reply.download_media(tmp.name); ogg_path = tmp.name
+            wav_path = ogg_path.replace('.ogg', '.wav')
+            audio = AudioSegment.from_file(ogg_path, format="ogg"); audio.export(wav_path, format="wav")
+            recognizer = sr.Recognizer()
+            with sr.AudioFile(wav_path) as source: audio_data = recognizer.record(source)
+            text = recognizer.recognize_google(audio_data, language="ru-RU")
+            await event.reply(f"📝 Распознанный текст:\n{text}")
+            log_command(event.sender_id, f".stt: {text}", source="Telegram", target_id=event.chat_id, result="ok")
+        except Exception as e: await event.reply(f"❌ Ошибка распознавания: {e}")
+        finally:
+            if os.path.exists(ogg_path): os.unlink(ogg_path)
+            if os.path.exists(wav_path): os.unlink(wav_path)
+
+    @client_instance.on(events.NewMessage(outgoing=True, pattern=r'^\.shutdown$'))
+    async def shutdown_cmd(event):
+        if event.sender_id != (await client1.get_entity(OWNER_USERNAME)).id:
+            await event.reply("❌ Только создатель может выключить бота."); return
+        await event.reply("👋 Завершаю работу...")
+        os._exit(0)
+
+    @client_instance.on(events.NewMessage(outgoing=True, pattern=r'^\.restart$'))
+    async def restart_cmd(event):
+        if event.sender_id != (await client1.get_entity(OWNER_USERNAME)).id:
+            await event.reply("❌ Только создатель может перезапустить бота."); return
+        await event.reply("🔄 Перезапуск...")
+        os._exit(1)
+
+    @client_instance.on(events.NewMessage(incoming=True))
+    async def afk_handler(event):
+        if event.out or not event.is_private: return
+        if str(event.sender_id) in afk_users:
+            reason = afk_users[str(event.sender_id)]
+            await event.reply(f"⏳ Пользователь отошёл: {reason}")
+
+    @client_instance.on(events.NewMessage(outgoing=True, pattern=r'^\.afk(\s+(.*))?'))
+    async def afk_set_cmd(event):
+        reason = event.pattern_match.group(2).strip() if event.pattern_match.group(2) else "отошёл"
+        afk_users[str(event.sender_id)] = reason; save_json(AFK_FILE, afk_users)
+        await event.delete()
+        await event.client.send_message(event.chat_id, f"⏳ Вы ушли в AFK: {reason}")
+        await broadcast_state()
+
+    @client_instance.on(events.NewMessage(outgoing=True, pattern=r'^\.unafk$'))
+    async def unafk_cmd(event):
+        if str(event.sender_id) in afk_users:
+            del afk_users[str(event.sender_id)]; save_json(AFK_FILE, afk_users)
+            await event.delete()
+            await event.client.send_message(event.chat_id, "✅ Вы вернулись из AFK.")
+            await broadcast_state()
+
+    @client_instance.on(events.NewMessage(outgoing=True, pattern=r'^\.search\s+(.*)'))
+    async def search_cmd(event):
+        query = event.pattern_match.group(1).strip()
+        await event.delete()
+        try:
+            results = list(google_search(query, num_results=5, lang="ru"))
+            if results: text = f"🔎 Результаты поиска: **{query}**\n" + "\n".join(results)
+            else: text = "Ничего не найдено."
+        except Exception as e: text = f"❌ Ошибка поиска: {e}"
+        await event.client.send_message(event.chat_id, text)
+
+    @client_instance.on(events.NewMessage(incoming=True))
+    async def filter_handler(event):
+        if event.out: return
+        chat_id = str(event.chat_id)
+        text = event.text or ""
+        for word in blacklist:
+            if word.lower() in text.lower():
+                try: await event.delete()
+                except: pass
+                return
+        if chat_id in filters:
+            for rule in filters[chat_id]:
+                if rule["word"].lower() in text.lower():
+                    if rule["action"] == "delete":
+                        try: await event.delete()
+                        except: pass
+                    elif rule["action"] == "mute":
+                        muted_chats.add(event.chat_id); save_state(); await broadcast_state()
+                    return
+
+    @client_instance.on(events.NewMessage(incoming=True))
+    async def auto_read_handler(event):
+        if getattr(client_instance, 'auto_read', False) and not event.out:
+            await event.mark_read()
 
 register_handlers(client1)
 if client2: register_handlers(client2)
@@ -323,6 +663,37 @@ if bot:
                 pending_registrations.pop(token)
             await event.edit("🚫 Вход отклонён.", buttons=None)
 
+    @bot.on(events.NewMessage(pattern=r'^/mute\s+(\S+)'))
+    async def bot_mute(event):
+        chat_id = int(event.pattern_match.group(1))
+        muted_chats.add(chat_id); save_state()
+        await event.reply("Чат заглушен.")
+        await broadcast_state(); await backup_state()
+
+    @bot.on(events.NewMessage(pattern=r'^/unmute\s+(\S+)'))
+    async def bot_unmute(event):
+        chat_id = int(event.pattern_match.group(1))
+        muted_chats.discard(chat_id); save_state()
+        await event.reply("Чат размучен.")
+        await broadcast_state(); await backup_state()
+
+    @bot.on(events.NewMessage(pattern=r'^/unmuteall'))
+    async def bot_unmuteall(event):
+        muted_chats.clear(); save_state()
+        await event.reply("Все чаты размучены.")
+        await broadcast_state(); await backup_state()
+
+    @bot.on(events.NewMessage(pattern=r'^/autoreply\s+(on|off)'))
+    async def bot_autoreply(event):
+        state = event.pattern_match.group(1)
+        auto_reply_global['enabled'] = (state == 'on')
+        await event.reply(f"Автоответчик {'включён' if state == 'on' else 'выключен'}.")
+        await broadcast_state(); await backup_state()
+
+    @bot.on(events.NewMessage(pattern=r'^/status'))
+    async def bot_status(event):
+        await event.reply(f"Активных мутов: {len(muted_chats)}\nAFK: {len(afk_users)}\nАвтоответчик: {'включён' if auto_reply_global['enabled'] else 'выключен'}")
+
 # ---------- Веб-обработчики ----------
 async def check_auth(request):
     auth = request.headers.get("Authorization")
@@ -331,7 +702,8 @@ async def check_auth(request):
         user, pwd = credentials.split(":", 1)
         if user in admins and admins[user]["password"] == hash_password(pwd): return user
     token = request.cookies.get("auth_token")
-    if token and auth_tokens.get(token) == True: return "admin"
+    if token and (auth_tokens.get(token) == True or token == "password_ok"):
+        return "admin"
     invite_token = request.cookies.get("invite_token")
     if invite_token and invite_token in invites: return invites[invite_token].get("role", "readonly")
     raise web.HTTPUnauthorized(headers={"WWW-Authenticate": "Basic realm=\"Userbot Panel\""})
@@ -353,11 +725,16 @@ async def auth_login(request):
     data = await request.post()
     username = data.get("username", ""); password = data.get("password", "")
     if username in admins and admins[username]["password"] == hash_password(password):
-        resp = web.HTTPFound("/dashboard"); resp.set_cookie("auth_token", "password_ok"); return resp
+        auth_tokens["password_ok"] = True
+        resp = web.HTTPFound("/dashboard")
+        resp.set_cookie("auth_token", "password_ok")
+        return resp
     return web.HTTPFound("/login?error=1")
 
 async def logout(request):
-    resp = web.HTTPFound("/login"); resp.del_cookie("auth_token"); resp.del_cookie("invite_token"); return resp
+    resp = web.HTTPFound("/login"); resp.del_cookie("auth_token"); resp.del_cookie("invite_token")
+    auth_tokens.pop("password_ok", None)
+    return resp
 
 async def request_bot_auth(request):
     mode = request.query.get("mode", "login")
@@ -618,6 +995,26 @@ async def api_mass_unmute(request):
     await broadcast_state(); await backup_state()
     return web.Response(text="OK")
 
+async def api_unmute_all(request):
+    muted_chats.clear(); save_state()
+    # уведомление владельцу
+    try:
+        owner = await client1.get_entity(OWNER_USERNAME)
+        await client1.send_message(owner.id, "🔊 Все чаты размучены через веб-панель.")
+    except: pass
+    await broadcast_state(); await backup_state()
+    return web.Response(text="OK")
+
+async def api_toggle_autoreply(request):
+    auto_reply_global['enabled'] = not auto_reply_global['enabled']
+    # уведомление владельцу
+    try:
+        owner = await client1.get_entity(OWNER_USERNAME)
+        await client1.send_message(owner.id, f"🌐 Автоответчик {'включён' if auto_reply_global['enabled'] else 'выключен'} через веб-панель.")
+    except: pass
+    await broadcast_state(); await backup_state()
+    return web.Response(text="OK")
+
 app = web.Application()
 app.router.add_get("/", lambda r: web.Response(text="OK"))
 app.router.add_get("/login", login_page)
@@ -651,6 +1048,8 @@ app.router.add_post("/api/active_account", api_active_account)
 app.router.add_post("/api/theme", api_theme)
 app.router.add_get("/api/mass_mute", api_mass_mute)
 app.router.add_get("/api/mass_unmute", api_mass_unmute)
+app.router.add_get("/api/unmute_all", api_unmute_all)
+app.router.add_get("/api/toggle_autoreply", api_toggle_autoreply)
 
 async def start_web_server():
     runner = web.AppRunner(app); await runner.setup()
