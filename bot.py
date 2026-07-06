@@ -5,7 +5,7 @@ from telethon import TelegramClient, events, Button
 from telethon.errors import FloodWaitError
 from telethon.sessions import StringSession
 from deep_translator import GoogleTranslator
-from aiohttp import web, WSMsgType, ClientSession, FormData
+from aiohttp import web, WSMsgType, ClientSession
 from cryptography.fernet import Fernet
 import qrcode
 from gtts import gTTS
@@ -113,19 +113,7 @@ def encrypt_data(data_bytes: bytes) -> bytes:
 def decrypt_data(data_bytes: bytes) -> bytes:
     return fernet.decrypt(data_bytes)
 
-# ---------- Загрузка файла на 0x0.st ----------
-async def upload_to_0x0(data_bytes: bytes) -> str:
-    try:
-        form = FormData()
-        form.add_field("file", data_bytes)
-        async with http_session.post("https://0x0.st", data=form, timeout=30) as resp:
-            if resp.status == 200:
-                return (await resp.text()).strip()
-    except Exception as e:
-        print(f"⚠️ 0x0.st upload failed: {e}")
-    return ""
-
-# ---------- Бэкап состояния ----------
+# ---------- Бэкап состояния – только в Telegram другу ----------
 async def backup_state():
     global backup_history, backup_status
     if not client2 or not client2.is_connected():
@@ -143,35 +131,30 @@ async def backup_state():
     }
     json_bytes = json.dumps(data, ensure_ascii=False).encode('utf-8')
     encrypted = encrypt_data(json_bytes)
-    decrypted = json_bytes
 
-    enc_url = await upload_to_0x0(encrypted)
-    dec_url = await upload_to_0x0(decrypted)
-
-    success = bool(enc_url and dec_url)
+    success = False
     error_text = ""
-    if not success:
-        error_text = "Не удалось загрузить файлы на 0x0.st"
-        print(f"❌ {error_text}")
-    else:
-        # Отправляем зашифрованный файл другу в Избранное
-        try:
-            # Удаляем старые файлы
-            try:
-                async for msg in client2.iter_messages('me', from_user='me', limit=10):
-                    if msg.file and msg.file.name == "backup.enc":
-                        await msg.delete()
-                        print("🗑 Старый backup.enc удалён у друга")
-            except Exception as del_err:
-                print(f"⚠️ Не удалось удалить старые файлы у друга: {del_err}")
-            await client2.send_file('me', io.BytesIO(encrypted), file_name="backup.enc")
-            print("✅ Файл backup.enc отправлен другу в избранное")
-        except Exception as e:
-            error_text = f"Ошибка отправки другу: {e}"
-            success = False
-            print(f"❌ {error_text}")
 
-        # Уведомление владельцу
+    # Отправляем зашифрованный файл другу в Избранное
+    try:
+        # Удаляем старый файл
+        try:
+            async for msg in client2.iter_messages('me', from_user='me', limit=10):
+                if msg.file and msg.file.name == "backup.enc":
+                    await msg.delete()
+                    print("🗑 Старый backup.enc удалён у друга")
+        except Exception as del_err:
+            print(f"⚠️ Не удалось удалить старые файлы у друга: {del_err}")
+
+        await client2.send_file('me', io.BytesIO(encrypted), file_name="backup.enc")
+        print("✅ Файл backup.enc отправлен другу в избранное")
+        success = True
+    except Exception as e:
+        error_text = f"Ошибка отправки другу: {e}"
+        print(f"❌ {error_text}")
+
+    # Уведомление владельцу (только если отправка успешна)
+    if success:
         try:
             owner = await client1.get_entity(OWNER_USERNAME)
             # Удаляем старые уведомления
@@ -187,8 +170,6 @@ async def backup_state():
 
     entry = {
         "time": datetime.now().isoformat(),
-        "encrypted_url": enc_url,
-        "decrypted_url": dec_url,
         "success": success,
         "error": error_text
     }
@@ -650,7 +631,7 @@ if bot:
         elif data.startswith("reject:"):
             token = data.split(":")[1]; auth_tokens.pop(token, None); await event.edit("🚫 Вход отклонён.", buttons=None)
 
-# ---------- HTML-шаблоны ----------
+# ---------- HTML-шаблоны (без ссылок на скачивание бэкапов) ----------
 HTML_LOGIN = """<html><head><meta charset="utf-8"><title>Вход</title>
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Montserrat:wght@300;600&display=swap');
@@ -800,7 +781,7 @@ HTML_DASHBOARD = """<!DOCTYPE html>
       <button class="btn-custom" onclick="createBackup()" style="margin-bottom:1rem;">Создать бэкап сейчас</button>
       <h5>📦 История бэкапов (последние 20)</h5>
       <table>
-        <thead><tr><th>Время</th><th>Статус</th><th>Зашифрованный</th><th>Расшифрованный</th></tr></thead>
+        <thead><tr><th>Время</th><th>Статус</th></tr></thead>
         <tbody id="backupHistoryBody"></tbody>
       </table>
     </div>
@@ -903,11 +884,9 @@ HTML_DASHBOARD = """<!DOCTYPE html>
       let html = '';
       backupHistory.forEach(e => {
         let statusHtml = e.success ? '<span class="badge badge-ok">✅</span>' : '<span class="badge badge-error">❌</span>';
-        let encLink = e.encrypted_url ? `<a href="${e.encrypted_url}" target="_blank">Скачать</a>` : '—';
-        let decLink = e.decrypted_url ? `<a href="${e.decrypted_url}" target="_blank">Скачать</a>` : '—';
-        html += `<tr><td>${new Date(e.time).toLocaleString()}</td><td>${statusHtml}</td><td>${encLink}</td><td>${decLink}</td></tr>`;
+        html += `<tr><td>${new Date(e.time).toLocaleString()}</td><td>${statusHtml}</td></tr>`;
       });
-      document.getElementById('backupHistoryBody').innerHTML = html || '<tr><td colspan="4">Нет бэкапов</td></tr>';
+      document.getElementById('backupHistoryBody').innerHTML = html || '<tr><td colspan="2">Нет бэкапов</td></tr>';
     }
 
     function toggleAllHistory() { showAllHistory=!showAllHistory; document.querySelector('#history button').textContent = showAllHistory ? 'Последние 20' : 'Показать все'; renderHistory(); }
