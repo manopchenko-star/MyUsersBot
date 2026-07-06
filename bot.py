@@ -15,7 +15,6 @@ from googlesearch import search as google_search
 
 AudioSegment.converter = "/opt/render/project/src/ffmpeg"
 
-# ---------- Конфигурация ----------
 API_ID = int(os.environ["API_ID"])
 API_HASH = os.environ["API_HASH"]
 SESSION_STRING_1 = os.environ["SESSION_STRING"]
@@ -29,7 +28,6 @@ ACC2_DISPLAY_NAME = os.environ.get("ACC2_DISPLAY_NAME", "")
 OWNER_USERNAME = os.environ.get("OWNER_USERNAME", "Anopchenko2011")
 BACKUP_INTERVAL = int(os.environ.get("BACKUP_INTERVAL", "300"))
 BACKUP_KEY = os.environ.get("BACKUP_KEY", "")
-
 DATA_FILE = Path("userbot_data.json")
 LOG_FILE = Path("command_history.json")
 WARN_FILE = Path("warns.json")
@@ -60,7 +58,6 @@ if SESSION_STRING_2:
 bot = None
 if BOT_TOKEN: bot = TelegramClient("auth_bot_session", API_ID, API_HASH)
 
-# ---------- Глобальные переменные ----------
 muted_chats = set()
 auto_reply_chats = {}
 auto_reply_global = {'enabled': False, 'text': '⏳ Привет! Я сейчас не в сети, отвечу позже.'}
@@ -87,7 +84,6 @@ schedule = []
 active_account = "1"
 theme = "dark"
 
-# ---------- Работа с JSON ----------
 def load_json(path, default):
     if path.exists():
         try: return json.loads(path.read_text())
@@ -110,7 +106,8 @@ def load_state():
     muted_chats = set(data.get("muted_chats", [])); protected_users = set(data.get("protected_users", []))
 def load_history(): global command_history; command_history = load_json(LOG_FILE, [])
 def load_backup_history():
-    global backup_history; backup_history = load_json(HISTORY_FILE, [])
+    global backup_history
+    backup_history = load_json(HISTORY_FILE, [])
 def save_backup_history(): save_json(HISTORY_FILE, backup_history)
 def load_notes(): global notes; notes = load_json(NOTES_FILE, "")
 def save_notes(): save_json(NOTES_FILE, notes)
@@ -131,7 +128,6 @@ last_backup_msg_id = load_json(LAST_MSG_FILE, None)
 def encrypt_data(data_bytes): return fernet.encrypt(data_bytes)
 def decrypt_data(data_bytes): return fernet.decrypt(data_bytes)
 
-# ---------- Бэкапы ----------
 async def cleanup_old_backups():
     global last_backup_msg_id
     if not client2 or not client2.is_connected(): return
@@ -239,7 +235,6 @@ async def schedule_runner():
                 schedule.remove(task); save_schedule()
         await asyncio.sleep(30)
 
-# ---------- Имена и логи ----------
 async def resolve_name(user_id):
     try:
         user = await client1.get_entity(user_id)
@@ -307,7 +302,6 @@ async def init_protected_users():
     except Exception as e: print(f"⚠️ Не удалось найти владельца {OWNER_USERNAME}: {e}")
     save_state(); await broadcast_state(); await backup_state()
 
-# ---------- Обработчики команд ----------
 def register_handlers(client_instance):
     @client_instance.on(events.NewMessage(outgoing=True, pattern=r'^\.mute$'))
     async def mute_cmd(event):
@@ -657,7 +651,6 @@ register_handlers(client1)
 if client2: register_handlers(client2)
 for client_info in extra_clients.values(): register_handlers(client_info["client"])
 
-# ---------- Бот авторизации ----------
 if bot:
     @bot.on(events.CallbackQuery)
     async def auth_callback(event):
@@ -680,7 +673,6 @@ if bot:
                 pending_registrations.pop(token)
             await event.edit("🚫 Вход отклонён.", buttons=None)
 
-# ---------- HTML-шаблоны ----------
 HTML_LOGIN = """<html><head><meta charset="utf-8"><title>Вход</title>
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Montserrat:wght@300;600&display=swap');
@@ -1211,13 +1203,12 @@ async def request_bot_auth(request):
 
 async def check_token(request):
     token = request.query.get("token")
-    # Автоматическое одобрение при переходе по ссылке (для QR)
     if token in pending_registrations:
         info = pending_registrations.pop(token)
         password = uuid.uuid4().hex[:8]
         admins[info["name"]] = {"password": hash_password(password), "role": info["role"]}
         save_admins()
-        auth_tokens[token] = True  # чтобы после регистрации сразу авторизоваться
+        auth_tokens[token] = True
         return web.Response(text=f"Регистрация одобрена. Ваш пароль: {password}")
     if token in auth_tokens and auth_tokens[token] == "pending":
         auth_tokens[token] = True
@@ -1364,7 +1355,7 @@ async def guest_ws_handler(request):
     await ws.send_str(json.dumps(data, default=str, ensure_ascii=False))
     await ws.close(); return ws
 
-# ---------- API для новых функций ----------
+# API
 async def api_notes(request):
     if request.method == 'POST':
         data = await request.post()
