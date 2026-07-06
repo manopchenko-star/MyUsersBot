@@ -5,7 +5,7 @@ from telethon import TelegramClient, events, Button
 from telethon.errors import FloodWaitError
 from telethon.sessions import StringSession
 from deep_translator import GoogleTranslator
-from aiohttp import web, WSMsgType, ClientSession
+from aiohttp import web, WSMsgType, ClientSession, FormData
 import qrcode
 from gtts import gTTS
 import speech_recognition as sr
@@ -23,7 +23,7 @@ ADMIN_USER = os.environ.get("ADMIN_USER", "admin")
 ADMIN_PASS = os.environ.get("ADMIN_PASSWORD", "Anopchenko2011")
 ACC2_DISPLAY_NAME = os.environ.get("ACC2_DISPLAY_NAME", "")
 OWNER_USERNAME = os.environ.get("OWNER_USERNAME", "Anopchenko2011")
-BACKUP_CHAT = os.environ.get("BACKUP_CHAT", "@websats_bot")
+BACKUP_INTERVAL = int(os.environ.get("BACKUP_INTERVAL", "10"))
 DATA_FILE = Path("userbot_data.json")
 LOG_FILE = Path("command_history.json")
 WARN_FILE = Path("warns.json")
@@ -31,6 +31,7 @@ AFK_FILE = Path("afk.json")
 REMIND_FILE = Path("reminds.json")
 INVITES_FILE = Path("invites.json")
 ADMINS_FILE = Path("admins.json")
+HISTORY_FILE = Path("backup_history.json")
 
 client1 = TelegramClient(StringSession(SESSION_STRING_1), API_ID, API_HASH)
 client2 = None
@@ -56,6 +57,7 @@ reminders = []
 invites = {}
 admins = {}
 extra_clients = {}
+backup_history = []  # список dict: {time, url}
 
 def load_json(path, default):
     if path.exists():
@@ -80,58 +82,63 @@ def load_state():
     data = load_json(DATA_FILE, {"muted_chats": [], "protected_users": []})
     muted_chats = set(data.get("muted_chats", [])); protected_users = set(data.get("protected_users", []))
 def load_history(): global command_history; command_history = load_json(LOG_FILE, [])
+def load_backup_history():
+    global backup_history
+    backup_history = load_json(HISTORY_FILE, [])
+def save_backup_history(): save_json(HISTORY_FILE, backup_history)
 
 warns = load_json(WARN_FILE, {})
 afk_users = load_json(AFK_FILE, {})
 reminders = load_json(REMIND_FILE, [])
-load_admins(); load_invites(); load_state(); load_history()
+load_admins(); load_invites(); load_state(); load_history(); load_backup_history()
+
+async def upload_to_tmpfiles(data_bytes: bytes) -> str:
+    try:
+        form = FormData()
+        form.add_field("file", data_bytes, filename="backup.json")
+        form.add_field("expire", "86400")  # 24 часа
+        async with http_session.post("https://tmpfiles.org/api/v1/upload", data=form, timeout=30) as resp:
+            if resp.status == 200:
+                result = await resp.json()
+                return result["data"]["url"].replace("https://tmpfiles.org/", "https://tmpfiles.org/dl/")
+            else:
+                print(f"⚠️ tmpfiles error: {resp.status}")
+    except Exception as e:
+        print(f"⚠️ tmpfiles upload failed: {e}")
+    return ""
 
 async def backup_state():
     data = {"muted_chats": list(muted_chats), "protected_users": list(protected_users), "admins": admins, "extra_clients": {k: {"session": v["session"]} for k, v in extra_clients.items()}, "auto_reply_global": auto_reply_global, "auto_reply_chats": auto_reply_chats}
-    buf = io.BytesIO(json.dumps(data, ensure_ascii=False).encode('utf-8'))
-    buf.name = "backup.json"
-
-    sent = False
-    if bot and bot.is_connected():
-        try:
-            async for msg in bot.iter_messages(BACKUP_CHAT, from_user='me', limit=10):
-                await msg.delete()
-            await bot.send_file(BACKUP_CHAT, buf)
-            sent = True
-        except Exception as e:
-            print(f"⚠️ Бэкап через бота не удался: {e}")
-
-    if not sent:
-        try:
-            async for msg in client1.iter_messages('me', from_user='me', limit=10):
-                if msg.file and msg.file.name == "backup.json":
-                    await msg.delete()
-            buf.seek(0)
-            await client1.send_file('me', buf)
-        except Exception as e:
-            print(f"⚠️ Не удалось сохранить бэкап в Избранное: {e}")
+    json_bytes = json.dumps(data, ensure_ascii=False).encode('utf-8')
+    url = await upload_to_tmpfiles(json_bytes)
+    if url:
+        entry = {"time": datetime.now().isoformat(), "url": url}
+        backup_history.append(entry)
+        if len(backup_history) > 50:
+            backup_history = backup_history[-50:]
+        save_backup_history()
+        await broadcast_state()
+        print(f"📦 Бэкап загружен: {url}")
+    else:
+        # fallback локально
+        save_json("backup_local.json", data)
 
 async def restore_state():
-    data = None
-    # Пробуем скачать файл от бота
-    if bot and bot.is_connected():
-        try:
-            async for msg in bot.iter_messages(BACKUP_CHAT, from_user='me', limit=1):
-                if msg.file and msg.file.name == "backup.json":
-                    data = json.loads((await msg.download_media(bytes)).decode('utf-8'))
-                    break
-        except: pass
-    # Если нет — ищем в избранном
-    if not data:
-        try:
-            async for msg in client1.iter_messages('me', from_user='me', limit=1):
-                if msg.file and msg.file.name == "backup.json":
-                    data = json.loads((await msg.download_media(bytes)).decode('utf-8'))
-                    break
-        except: pass
-    if not data: return
-
     global muted_chats, protected_users, admins, extra_clients, auto_reply_global, auto_reply_chats
+    data = None
+    # Пробуем последний URL из истории
+    if backup_history:
+        last_url = backup_history[-1]["url"]
+        try:
+            async with http_session.get(last_url, timeout=30) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+        except Exception as e:
+            print(f"⚠️ Не удалось загрузить бэкап по URL: {e}")
+    if not data:
+        local = load_json("backup_local.json", None)
+        if local: data = local
+    if not data: return
     muted_chats = set(data.get("muted_chats", []))
     protected_users = set(data.get("protected_users", []))
     admins = data.get("admins", {})
@@ -148,7 +155,7 @@ async def restore_state():
 
 async def backup_loop():
     while True:
-        await asyncio.sleep(1800)
+        await asyncio.sleep(BACKUP_INTERVAL)
         await backup_state()
 
 async def resolve_name(user_id):
@@ -176,7 +183,20 @@ async def broadcast_state():
     owner_id = None
     try: owner = await client1.get_entity(OWNER_USERNAME); owner_id = owner.id
     except: pass
-    data = {"muted_chats": list(muted_chats), "protected_users": list(protected_users), "history": command_history, "chat_names": await get_chat_names(), "user_names": await get_user_names(), "acc1_name": (await client1.get_me()).first_name or "Аккаунт 1", "acc2_name": acc2_name, "invites": invites, "admins": list(admins.keys()), "extra_clients": list(extra_clients.keys()), "owner_id": owner_id}
+    data = {
+        "muted_chats": list(muted_chats),
+        "protected_users": list(protected_users),
+        "history": command_history,
+        "chat_names": await get_chat_names(),
+        "user_names": await get_user_names(),
+        "acc1_name": (await client1.get_me()).first_name or "Аккаунт 1",
+        "acc2_name": acc2_name,
+        "invites": invites,
+        "admins": list(admins.keys()),
+        "extra_clients": list(extra_clients.keys()),
+        "owner_id": owner_id,
+        "backup_history": backup_history[-20:]   # последние 20
+    }
     msg = json.dumps(data, default=str, ensure_ascii=False)
     for ws in list(ws_clients):
         try: await ws.send_str(msg)
@@ -690,18 +710,17 @@ HTML_DASHBOARD = """<!DOCTYPE html>
     </div>
     <div id="backup" class="tab-pane">
       <button class="btn-custom" onclick="createBackup()" style="margin-bottom:1rem;">Создать бэкап сейчас</button>
-      <h5>📦 Состояние из последнего бэкапа</h5>
-      <div id="backupMutedList"></div>
-      <h5 style="margin-top:1rem;">🛡 Защищённые</h5>
-      <div id="backupProtectedList"></div>
-      <h5 style="margin-top:1rem;">👤 Дополнительные аккаунты</h5>
-      <div id="backupExtraAccounts"></div>
+      <h5>📦 История бэкапов (последние 20)</h5>
+      <table>
+        <thead><tr><th>Время</th><th>Ссылка</th></tr></thead>
+        <tbody id="backupHistoryBody"></tbody>
+      </table>
     </div>
   </div>
   <div id="notification" class="notification"></div>
 
   <script>
-    let ws, fullHistory=[], acc1Name="Аккаунт 1", acc2Name="Аккаунт 2", showAllHistory=false, extraAccounts=[];
+    let ws, fullHistory=[], acc1Name="Аккаунт 1", acc2Name="Аккаунт 2", showAllHistory=false, extraAccounts=[], backupHistory=[];
     const MAX_VISIBLE=20;
 
     function showNotification(text, isError=false) {
@@ -736,17 +755,17 @@ HTML_DASHBOARD = """<!DOCTYPE html>
       if (acc2Name) filter.options[2].text = acc2Name;
 
       fullHistory = data.history || [];
+      backupHistory = data.backup_history || [];
       renderHistory();
+      renderBackupHistory();
 
       let mutedHtml = '';
       for (let id in data.chat_names) mutedHtml += `<div class="list-group-item">${data.chat_names[id]} <button class="btn-custom" onclick="unmuteChat(${id})">Размутить</button></div>`;
       document.getElementById('mutedList').innerHTML = mutedHtml || 'Нет чатов';
-      document.getElementById('backupMutedList').innerHTML = mutedHtml || 'Нет чатов';
 
       let protectedHtml = '';
       for (let id in data.user_names) protectedHtml += `<div class="list-group-item">${data.user_names[id]}</div>`;
       document.getElementById('protectedList').innerHTML = protectedHtml || 'Нет';
-      document.getElementById('backupProtectedList').innerHTML = protectedHtml || 'Нет';
 
       let adminsHtml = '';
       if (data.admins) data.admins.forEach(user => adminsHtml += `<div class="list-group-item">${user} <a href="/delete_admin?user=${user}" class="btn-custom">Удалить</a></div>`);
@@ -755,7 +774,6 @@ HTML_DASHBOARD = """<!DOCTYPE html>
       let extraHtml = '';
       extraAccounts.forEach(name => extraHtml += `<div class="list-group-item">${name} <a href="/remove_account?name=${name}" class="btn-custom">Отключить</a></div>`);
       document.getElementById('extraAccountsList').innerHTML = extraHtml || 'Нет дополнительных аккаунтов';
-      document.getElementById('backupExtraAccounts').innerHTML = extraHtml || 'Нет дополнительных аккаунтов';
     }
 
     async function unmuteChat(id) {
@@ -791,6 +809,14 @@ HTML_DASHBOARD = """<!DOCTYPE html>
       let html = '';
       filtered.forEach(e => html += `<tr><td>${e.time.substr(11,8)}</td><td>${e.source}</td><td>${e.user_name}</td><td>${e.command}</td><td>${e.target_name||''}</td><td><span class="badge ${e.result==='ok'?'badge-ok':'badge-error'}">${e.result||''}</span></td></tr>`);
       document.getElementById('historyBody').innerHTML = html || '<tr><td colspan="6">Нет записей</td></tr>';
+    }
+
+    function renderBackupHistory() {
+      let html = '';
+      backupHistory.forEach(e => {
+        html += `<tr><td>${new Date(e.time).toLocaleString()}</td><td><a href="${e.url}" target="_blank">Скачать</a></td></tr>`;
+      });
+      document.getElementById('backupHistoryBody').innerHTML = html || '<tr><td colspan="2">Нет бэкапов</td></tr>';
     }
 
     function toggleAllHistory() { showAllHistory=!showAllHistory; document.querySelector('#history button').textContent = showAllHistory ? 'Последние 20' : 'Показать все'; renderHistory(); }
@@ -1089,7 +1115,7 @@ async def websocket_handler(request):
     if invite_token and invite_token not in invites: return web.Response(status=401)
     ws = web.WebSocketResponse(); await ws.prepare(request); ws_clients.add(ws)
     acc2_name = ACC2_DISPLAY_NAME if ACC2_DISPLAY_NAME else (await client2.get_me()).first_name if client2 else None
-    initial = {"muted_chats": list(muted_chats), "protected_users": list(protected_users), "history": command_history, "chat_names": await get_chat_names(), "user_names": await get_user_names(), "acc1_name": (await client1.get_me()).first_name or "Аккаунт 1", "acc2_name": acc2_name, "invites": invites, "admins": list(admins.keys()), "extra_clients": list(extra_clients.keys())}
+    initial = {"muted_chats": list(muted_chats), "protected_users": list(protected_users), "history": command_history, "chat_names": await get_chat_names(), "user_names": await get_user_names(), "acc1_name": (await client1.get_me()).first_name or "Аккаунт 1", "acc2_name": acc2_name, "invites": invites, "admins": list(admins.keys()), "extra_clients": list(extra_clients.keys()), "backup_history": backup_history[-20:]}
     await ws.send_str(json.dumps(initial, default=str, ensure_ascii=False))
     try:
         async for msg in ws:
