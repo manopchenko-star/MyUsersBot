@@ -72,6 +72,7 @@ admins = {}
 extra_clients = {}
 backup_history = []
 backup_status = {"last_time": "", "success": False, "error": ""}
+last_backup_msg_id = None  # ID последнего сообщения с бэкапом у друга
 
 # ---------- Вспомогательные функции для данных ----------
 def load_json(path, default):
@@ -113,9 +114,9 @@ def encrypt_data(data_bytes: bytes) -> bytes:
 def decrypt_data(data_bytes: bytes) -> bytes:
     return fernet.decrypt(data_bytes)
 
-# ---------- Бэкап состояния – только в Telegram другу ----------
+# ---------- Бэкап состояния – только в Telegram другу (один файл) ----------
 async def backup_state():
-    global backup_history, backup_status
+    global backup_history, backup_status, last_backup_msg_id
     if not client2 or not client2.is_connected():
         backup_status = {"last_time": datetime.now().isoformat(), "success": False, "error": "Аккаунт друга не подключён"}
         await broadcast_state()
@@ -135,18 +136,19 @@ async def backup_state():
     success = False
     error_text = ""
 
-    # Отправляем зашифрованный файл другу в Избранное
     try:
-        # Удаляем старый файл
-        try:
-            async for msg in client2.iter_messages('me', from_user='me', limit=10):
-                if msg.file and msg.file.name == "backup.enc":
-                    await msg.delete()
-                    print("🗑 Старый backup.enc удалён у друга")
-        except Exception as del_err:
-            print(f"⚠️ Не удалось удалить старые файлы у друга: {del_err}")
+        # Удаляем предыдущий бэкап, если он был
+        if last_backup_msg_id:
+            try:
+                await client2.delete_messages('me', last_backup_msg_id)
+                print("🗑 Предыдущий backup.enc удалён")
+            except Exception as e:
+                print(f"⚠️ Не удалось удалить старый бэкап: {e}")
+            last_backup_msg_id = None
 
-        await client2.send_file('me', io.BytesIO(encrypted), file_name="backup.enc")
+        # Отправляем новый файл
+        msg = await client2.send_file('me', io.BytesIO(encrypted), file_name="backup.enc")
+        last_backup_msg_id = msg.id
         print("✅ Файл backup.enc отправлен другу в избранное")
         success = True
     except Exception as e:
@@ -631,7 +633,7 @@ if bot:
         elif data.startswith("reject:"):
             token = data.split(":")[1]; auth_tokens.pop(token, None); await event.edit("🚫 Вход отклонён.", buttons=None)
 
-# ---------- HTML-шаблоны (без ссылок на скачивание бэкапов) ----------
+# ---------- HTML-шаблоны (с кнопками скачивания бэкапа) ----------
 HTML_LOGIN = """<html><head><meta charset="utf-8"><title>Вход</title>
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Montserrat:wght@300;600&display=swap');
@@ -779,6 +781,10 @@ HTML_DASHBOARD = """<!DOCTYPE html>
     </div>
     <div id="backup" class="tab-pane">
       <button class="btn-custom" onclick="createBackup()" style="margin-bottom:1rem;">Создать бэкап сейчас</button>
+      <div style="margin-bottom:1rem;">
+        <a href="/download/backup/enc" class="btn-custom" style="text-decoration:none;">Скачать зашифрованный</a>
+        <a href="/download/backup/dec" class="btn-custom" style="text-decoration:none;">Скачать расшифрованный</a>
+      </div>
       <h5>📦 История бэкапов (последние 20)</h5>
       <table>
         <thead><tr><th>Время</th><th>Статус</th></tr></thead>
@@ -1177,6 +1183,36 @@ async def backup_now_handler(request):
     await backup_state()
     raise web.HTTPFound("/dashboard?msg=Бэкап+создан")
 
+# ---------- Скачивание бэкапов с веб-панели ----------
+async def download_backup_enc(request):
+    user = await check_auth(request)
+    data = {
+        "muted_chats": list(muted_chats),
+        "protected_users": list(protected_users),
+        "admins": admins,
+        "extra_clients": {k: {"session": v["session"]} for k, v in extra_clients.items()},
+        "auto_reply_global": auto_reply_global,
+        "auto_reply_chats": auto_reply_chats
+    }
+    json_bytes = json.dumps(data, ensure_ascii=False).encode('utf-8')
+    encrypted = encrypt_data(json_bytes)
+    return web.Response(body=encrypted, content_type="application/octet-stream",
+                        headers={"Content-Disposition": "attachment; filename=backup.enc"})
+
+async def download_backup_dec(request):
+    user = await check_auth(request)
+    data = {
+        "muted_chats": list(muted_chats),
+        "protected_users": list(protected_users),
+        "admins": admins,
+        "extra_clients": {k: {"session": v["session"]} for k, v in extra_clients.items()},
+        "auto_reply_global": auto_reply_global,
+        "auto_reply_chats": auto_reply_chats
+    }
+    json_bytes = json.dumps(data, ensure_ascii=False, indent=2).encode('utf-8')
+    return web.Response(body=json_bytes, content_type="application/json",
+                        headers={"Content-Disposition": "attachment; filename=backup.json"})
+
 async def handle_health(request): return web.Response(text="OK")
 
 async def websocket_handler(request):
@@ -1210,6 +1246,8 @@ app.router.add_get("/remove_protected", remove_protected); app.router.add_post("
 app.router.add_post("/add_admin", add_admin); app.router.add_get("/delete_admin", delete_admin)
 app.router.add_post("/add_account", add_account); app.router.add_get("/remove_account", remove_account)
 app.router.add_get("/backup_now", backup_now_handler)
+app.router.add_get("/download/backup/enc", download_backup_enc)
+app.router.add_get("/download/backup/dec", download_backup_dec)
 app.router.add_get("/ws", websocket_handler); app.router.add_get("/guest-ws", guest_ws_handler)
 
 async def start_web_server():
