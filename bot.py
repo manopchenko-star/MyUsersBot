@@ -15,7 +15,6 @@ from googlesearch import search as google_search
 
 AudioSegment.converter = "/opt/render/project/src/ffmpeg"
 
-# ---------- Конфигурация ----------
 API_ID = int(os.environ["API_ID"])
 API_HASH = os.environ["API_HASH"]
 SESSION_STRING_1 = os.environ["SESSION_STRING"]
@@ -107,8 +106,7 @@ def load_state():
     muted_chats = set(data.get("muted_chats", [])); protected_users = set(data.get("protected_users", []))
 def load_history(): global command_history; command_history = load_json(LOG_FILE, [])
 def load_backup_history():
-    global backup_history
-    backup_history = load_json(HISTORY_FILE, [])
+    global backup_history; backup_history = load_json(HISTORY_FILE, [])
 def save_backup_history(): save_json(HISTORY_FILE, backup_history)
 def load_notes(): global notes; notes = load_json(NOTES_FILE, "")
 def save_notes(): save_json(NOTES_FILE, notes)
@@ -146,12 +144,7 @@ async def backup_state():
         backup_status = {"last_time": datetime.now().isoformat(), "success": False, "error": "Аккаунт друга не подключён"}
         await broadcast_state()
         return
-    data = {
-        "muted_chats": list(muted_chats), "protected_users": list(protected_users),
-        "admins": admins, "extra_clients": {k: {"session": v["session"]} for k, v in extra_clients.items()},
-        "auto_reply_global": auto_reply_global, "auto_reply_chats": auto_reply_chats,
-        "filters": filters, "blacklist": blacklist, "notes": notes, "schedule": schedule
-    }
+    data = {"muted_chats": list(muted_chats), "protected_users": list(protected_users), "admins": admins, "extra_clients": {k: {"session": v["session"]} for k, v in extra_clients.items()}, "auto_reply_global": auto_reply_global, "auto_reply_chats": auto_reply_chats, "filters": filters, "blacklist": blacklist, "notes": notes, "schedule": schedule}
     json_bytes = json.dumps(data, ensure_ascii=False).encode('utf-8')
     encrypted = encrypt_data(json_bytes)
     success = False; error_text = ""
@@ -250,9 +243,7 @@ async def resolve_chat_name(chat_id):
 
 def log_command(user_id, command, source="Telegram", target_id=None, user_name=None, target_name=None, result=None):
     global command_history
-    entry = {"time": datetime.now().isoformat(), "user_id": user_id, "user_name": user_name or str(user_id),
-             "command": command, "source": source, "target_id": target_id,
-             "target_name": target_name or (str(target_id) if target_id else "Избранное"), "result": result}
+    entry = {"time": datetime.now().isoformat(), "user_id": user_id, "user_name": user_name or str(user_id), "command": command, "source": source, "target_id": target_id, "target_name": target_name or (str(target_id) if target_id else "Избранное"), "result": result}
     command_history.append(entry)
     if len(command_history) > 50: command_history = command_history[-50:]
     save_json(LOG_FILE, command_history)
@@ -263,16 +254,7 @@ async def broadcast_state():
     owner_id = None
     try: owner = await client1.get_entity(OWNER_USERNAME); owner_id = owner.id
     except: pass
-    data = {
-        "muted_chats": list(muted_chats), "protected_users": list(protected_users),
-        "history": command_history, "chat_names": await get_chat_names(), "user_names": await get_user_names(),
-        "acc1_name": (await client1.get_me()).first_name or "Аккаунт 1", "acc2_name": acc2_name,
-        "invites": invites, "admins": list(admins.keys()), "extra_clients": list(extra_clients.keys()),
-        "owner_id": owner_id, "backup_history": backup_history[-20:], "backup_status": backup_status,
-        "afk_users": afk_users, "notes": notes, "auto_reply_global": auto_reply_global,
-        "active_account": active_account, "theme": theme, "filters": filters, "blacklist": blacklist,
-        "schedule": schedule
-    }
+    data = {"muted_chats": list(muted_chats), "protected_users": list(protected_users), "history": command_history, "chat_names": await get_chat_names(), "user_names": await get_user_names(), "acc1_name": (await client1.get_me()).first_name or "Аккаунт 1", "acc2_name": acc2_name, "invites": invites, "admins": list(admins.keys()), "extra_clients": list(extra_clients.keys()), "owner_id": owner_id, "backup_history": backup_history[-20:], "backup_status": backup_status, "afk_users": afk_users, "notes": notes, "auto_reply_global": auto_reply_global, "active_account": active_account, "theme": theme, "filters": filters, "blacklist": blacklist, "schedule": schedule}
     msg = json.dumps(data, default=str, ensure_ascii=False)
     for ws in list(ws_clients):
         try: await ws.send_str(msg)
@@ -303,7 +285,6 @@ async def init_protected_users():
     except Exception as e: print(f"⚠️ Не удалось найти владельца {OWNER_USERNAME}: {e}")
     save_state(); await broadcast_state(); await backup_state()
 
-# ---------- Обработчики команд ----------
 def register_handlers(client_instance):
     @client_instance.on(events.NewMessage(outgoing=True, pattern=r'^\.mute$'))
     async def mute_cmd(event):
@@ -958,19 +939,25 @@ HTML_DASHBOARD = """<!DOCTYPE html>
 
     function renderMuted(data) {
       let html = '';
-      for (let id in data.chat_names) html += '<div class="list-group-item">' + data.chat_names[id] + ' <button class="btn-custom" onclick="unmuteChat(' + id + ')">Размутить</button></div>';
+      for (let id in data.chat_names) {
+        html += '<div class="list-group-item">' + data.chat_names[id] + ' <button class="btn-custom" onclick="unmuteChat(' + id + ')">Размутить</button></div>';
+      }
       document.getElementById('mutedList').innerHTML = html || 'Нет чатов';
     }
 
     function renderProtected(data) {
       let html = '';
-      for (let id in data.user_names) html += '<div class="list-group-item">' + data.user_names[id] + '</div>';
+      for (let id in data.user_names) {
+        html += '<div class="list-group-item">' + data.user_names[id] + '</div>';
+      }
       document.getElementById('protectedList').innerHTML = html || 'Нет';
     }
 
     function renderHistory() {
       let html = '';
-      fullHistory.slice(-20).forEach(e => html += '<tr><td>' + e.time.substr(11,8) + '</td><td>' + e.source + '</td><td>' + e.user_name + '</td><td>' + e.command + '</td><td>' + (e.target_name||'') + '</td></tr>');
+      fullHistory.slice(-20).forEach(e => {
+        html += '<tr><td>' + e.time.substr(11,8) + '</td><td>' + e.source + '</td><td>' + e.user_name + '</td><td>' + e.command + '</td><td>' + (e.target_name||'') + '</td></tr>';
+      });
       document.getElementById('historyBody').innerHTML = html || '<tr><td colspan="5">Нет записей</td></tr>';
     }
 
@@ -985,19 +972,25 @@ HTML_DASHBOARD = """<!DOCTYPE html>
 
     function renderAdmins(data) {
       let html = '';
-      if (data.admins) data.admins.forEach(user => html += '<div class="list-group-item">' + user + ' <a href="/delete_admin?user=' + user + '" class="btn-custom">Удалить</a></div>');
+      if (data.admins) data.admins.forEach(user => {
+        html += '<div class="list-group-item">' + user + ' <a href="/delete_admin?user=' + user + '" class="btn-custom">Удалить</a></div>';
+      });
       document.getElementById('adminsList').innerHTML = html || 'Нет админов';
     }
 
     function renderExtraAccounts() {
       let html = '';
-      extraAccounts.forEach(name => html += '<div class="list-group-item">' + name + ' <a href="/remove_account?name=' + name + '" class="btn-custom">Отключить</a></div>');
+      extraAccounts.forEach(name => {
+        html += '<div class="list-group-item">' + name + ' <a href="/remove_account?name=' + name + '" class="btn-custom">Отключить</a></div>';
+      });
       document.getElementById('extraAccountsList').innerHTML = html || 'Нет';
     }
 
     function renderAfk() {
       let html = '';
-      for (let uid in afkUsers) html += '<div class="list-group-item">' + uid + ': ' + afkUsers[uid] + ' <button class="btn-custom" onclick="removeAfk(\'' + uid + '\')">Снять</button></div>';
+      for (let uid in afkUsers) {
+        html += '<div class="list-group-item">' + uid + ': ' + afkUsers[uid] + ' <button class="btn-custom" onclick="removeAfk(\'' + uid + '\')">Снять</button></div>';
+      }
       document.getElementById('afkList').innerHTML = html || 'Нет AFK';
     }
 
@@ -1143,7 +1136,6 @@ ws.onmessage = function(event) {
 </script>
 </body></html>"""
 
-# ---------- Веб-обработчики ----------
 async def check_auth(request):
     auth = request.headers.get("Authorization")
     if auth and auth.startswith("Basic "):
@@ -1357,7 +1349,6 @@ async def guest_ws_handler(request):
     await ws.send_str(json.dumps(data, default=str, ensure_ascii=False))
     await ws.close(); return ws
 
-# API
 async def api_notes(request):
     if request.method == 'POST':
         data = await request.post()
@@ -1403,13 +1394,7 @@ async def api_filters_remove(request):
 
 async def api_schedule_add(request):
     data = await request.post()
-    task = {
-        "time": data.get('time',''),
-        "account": data.get('account','1'),
-        "target": data.get('target','me'),
-        "command": data.get('command',''),
-        "args": data.get('args','')
-    }
+    task = {"time": data.get('time',''), "account": data.get('account','1'), "target": data.get('target','me'), "command": data.get('command',''), "args": data.get('args','')}
     schedule.append(task); save_schedule(); await broadcast_state()
     return web.Response(text="OK")
 
