@@ -15,6 +15,7 @@ from googlesearch import search as google_search
 
 AudioSegment.converter = "/opt/render/project/src/ffmpeg"
 
+# ---------- Конфигурация ----------
 API_ID = int(os.environ["API_ID"])
 API_HASH = os.environ["API_HASH"]
 SESSION_STRING_1 = os.environ["SESSION_STRING"]
@@ -28,6 +29,7 @@ ACC2_DISPLAY_NAME = os.environ.get("ACC2_DISPLAY_NAME", "")
 OWNER_USERNAME = os.environ.get("OWNER_USERNAME", "Anopchenko2011")
 BACKUP_INTERVAL = int(os.environ.get("BACKUP_INTERVAL", "300"))
 BACKUP_KEY = os.environ.get("BACKUP_KEY", "")
+
 DATA_FILE = Path("userbot_data.json")
 LOG_FILE = Path("command_history.json")
 WARN_FILE = Path("warns.json")
@@ -58,6 +60,7 @@ if SESSION_STRING_2:
 bot = None
 if BOT_TOKEN: bot = TelegramClient("auth_bot_session", API_ID, API_HASH)
 
+# ---------- Глобальные переменные ----------
 muted_chats = set()
 auto_reply_chats = {}
 auto_reply_global = {'enabled': False, 'text': '⏳ Привет! Я сейчас не в сети, отвечу позже.'}
@@ -84,6 +87,7 @@ schedule = []
 active_account = "1"
 theme = "dark"
 
+# ---------- Работа с JSON ----------
 def load_json(path, default):
     if path.exists():
         try: return json.loads(path.read_text())
@@ -97,10 +101,8 @@ def load_admins():
     admins = load_json(ADMINS_FILE, {})
     if not admins: admins = {ADMIN_USER: {"password": hash_password(ADMIN_PASS), "role": "admin"}}; save_json(ADMINS_FILE, admins)
 def save_admins(): save_json(ADMINS_FILE, admins)
-
 def load_invites(): global invites; invites = load_json(INVITES_FILE, {})
 def save_invites(): save_json(INVITES_FILE, invites)
-
 def save_state(): save_json(DATA_FILE, {"muted_chats": list(muted_chats), "protected_users": list(protected_users)})
 def load_state():
     global muted_chats, protected_users
@@ -108,10 +110,8 @@ def load_state():
     muted_chats = set(data.get("muted_chats", [])); protected_users = set(data.get("protected_users", []))
 def load_history(): global command_history; command_history = load_json(LOG_FILE, [])
 def load_backup_history():
-    global backup_history
-    backup_history = load_json(HISTORY_FILE, [])
+    global backup_history; backup_history = load_json(HISTORY_FILE, [])
 def save_backup_history(): save_json(HISTORY_FILE, backup_history)
-
 def load_notes(): global notes; notes = load_json(NOTES_FILE, "")
 def save_notes(): save_json(NOTES_FILE, notes)
 def load_filters(): global filters; filters = load_json(FILTERS_FILE, {})
@@ -131,6 +131,7 @@ last_backup_msg_id = load_json(LAST_MSG_FILE, None)
 def encrypt_data(data_bytes): return fernet.encrypt(data_bytes)
 def decrypt_data(data_bytes): return fernet.decrypt(data_bytes)
 
+# ---------- Бэкапы ----------
 async def cleanup_old_backups():
     global last_backup_msg_id
     if not client2 or not client2.is_connected(): return
@@ -226,24 +227,19 @@ async def schedule_runner():
                     if account == "2" and client2: client = client2
                     elif account in extra_clients: client = extra_clients[account]["client"]
                     else: client = client1
-                    # Исполнение команды аналогично send_cmd
                     if command == ".spam":
                         parts = args.split(maxsplit=1)
                         if len(parts)==2:
                             count = int(parts[0]); text = parts[1]
                             if count <= 50:
                                 for _ in range(count): await client.send_message(target, text); await asyncio.sleep(0.4)
-                    elif command in (".mute", ".unmute", ".ping", ".avto", ".help"):
-                        # Простейшая реализация, можно расширить
-                        pass
-                    schedule.remove(task)
-                    save_schedule()
+                    schedule.remove(task); save_schedule()
             except Exception as e:
                 print(f"Ошибка выполнения задачи {task}: {e}")
-                schedule.remove(task)
-                save_schedule()
+                schedule.remove(task); save_schedule()
         await asyncio.sleep(30)
 
+# ---------- Имена и логи ----------
 async def resolve_name(user_id):
     try:
         user = await client1.get_entity(user_id)
@@ -311,6 +307,7 @@ async def init_protected_users():
     except Exception as e: print(f"⚠️ Не удалось найти владельца {OWNER_USERNAME}: {e}")
     save_state(); await broadcast_state(); await backup_state()
 
+# ---------- Обработчики команд ----------
 def register_handlers(client_instance):
     @client_instance.on(events.NewMessage(outgoing=True, pattern=r'^\.mute$'))
     async def mute_cmd(event):
@@ -625,7 +622,7 @@ def register_handlers(client_instance):
         query = event.pattern_match.group(1).strip()
         await event.delete()
         try:
-            results = list(google_search(query, num=5, lang="ru"))
+            results = list(google_search(query, num_results=5, lang="ru"))
             if results: text = f"🔎 Результаты поиска: **{query}**\n" + "\n".join(results)
             else: text = "Ничего не найдено."
         except Exception as e: text = f"❌ Ошибка поиска: {e}"
@@ -660,6 +657,7 @@ register_handlers(client1)
 if client2: register_handlers(client2)
 for client_info in extra_clients.values(): register_handlers(client_info["client"])
 
+# ---------- Бот авторизации ----------
 if bot:
     @bot.on(events.CallbackQuery)
     async def auth_callback(event):
@@ -682,19 +680,20 @@ if bot:
                 pending_registrations.pop(token)
             await event.edit("🚫 Вход отклонён.", buttons=None)
 
+# ---------- HTML-шаблоны ----------
 HTML_LOGIN = """<html><head><meta charset="utf-8"><title>Вход</title>
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Montserrat:wght@300;600&display=swap');
 * { box-sizing: border-box; }
 body { margin: 0; height: 100vh; display: flex; align-items: center; justify-content: center; background: linear-gradient(45deg, #0a0a0a, #1a1a2e, #0a0a0a); background-size: 400% 400%; animation: gradientBG 10s ease infinite; font-family: 'Montserrat', sans-serif; }
 @keyframes gradientBG { 0%{background-position:0% 50%} 50%{background-position:100% 50%} 100%{background-position:0% 50%} }
-.card { background: rgba(20,20,30,0.9); backdrop-filter: blur(10px); border: 1px solid rgba(233,69,96,0.3); border-radius: 16px; padding: 2rem; width: 320px; box-shadow: 0 0 30px rgba(233,69,96,0.3), 0 0 60px rgba(233,69,96,0.1); animation: pulse 2s infinite; }
+.card { background: rgba(20,20,30,0.9); backdrop-filter: blur(10px); border: 1px solid rgba(233,69,96,0.3); border-radius: 16px; padding: 2rem; width: 320px; box-shadow: 0 0 30px rgba(233,69,96,0.3); animation: pulse 2s infinite; }
 @keyframes pulse { 0% { box-shadow: 0 0 30px rgba(233,69,96,0.3); } 50% { box-shadow: 0 0 50px rgba(233,69,96,0.6); } 100% { box-shadow: 0 0 30px rgba(233,69,96,0.3); } }
-h2 { color: #e94560; text-align: center; font-weight: 600; margin-top: 0; text-shadow: 0 0 10px rgba(233,69,96,0.5); }
+h2 { color: #e94560; text-align: center; font-weight: 600; margin-top: 0; }
 input, select { width: 100%; padding: 0.7rem; margin: 0.5rem 0; border: none; border-radius: 8px; background: #1a1a2e; color: #e0e0e0; font-size: 1rem; border: 1px solid rgba(233,69,96,0.2); transition: 0.3s; }
 input:focus, select:focus { border-color: #e94560; box-shadow: 0 0 10px rgba(233,69,96,0.5); outline: none; }
-button { width: 100%; padding: 0.7rem; margin-top: 1rem; border: none; border-radius: 8px; background: #e94560; color: white; font-weight: 600; cursor: pointer; transition: 0.3s; box-shadow: 0 0 15px rgba(233,69,96,0.4); }
-button:hover { background: #c93750; transform: scale(1.02); box-shadow: 0 0 25px rgba(233,69,96,0.6); }
+button { width: 100%; padding: 0.7rem; margin-top: 1rem; border: none; border-radius: 8px; background: #e94560; color: white; font-weight: 600; cursor: pointer; transition: 0.3s; }
+button:hover { background: #c93750; transform: scale(1.02); }
 .bot-login { margin-top: 1.5rem; text-align: center; }
 .bot-login button { background: transparent; border: 1px solid #e94560; box-shadow: none; }
 .bot-login button:hover { background: rgba(233,69,96,0.1); }
@@ -850,7 +849,7 @@ HTML_DASHBOARD = """<!DOCTYPE html>
     <div id="admins" class="tab-pane">
       <form action="/add_admin" method="post" style="display:flex; gap:0.5rem; margin-bottom:1rem;">
         <input name="username" placeholder="Логин" required>
-        <input name="password" type="password" placeholder="Пароль" required>
+        <input name="password" type="password" placeholder="Пароль" required autocomplete="new-password">
         <select name="role"><option value="admin">Админ</option><option value="readonly">Чтение</option></select>
         <button type="submit" class="btn-custom">Добавить</button>
       </form>
@@ -1150,6 +1149,7 @@ ws.onmessage = function(event) {
 </script>
 </body></html>"""
 
+# ---------- Веб-обработчики ----------
 async def check_auth(request):
     auth = request.headers.get("Authorization")
     if auth and auth.startswith("Basic "):
@@ -1211,10 +1211,19 @@ async def request_bot_auth(request):
 
 async def check_token(request):
     token = request.query.get("token")
+    # Автоматическое одобрение при переходе по ссылке (для QR)
+    if token in pending_registrations:
+        info = pending_registrations.pop(token)
+        password = uuid.uuid4().hex[:8]
+        admins[info["name"]] = {"password": hash_password(password), "role": info["role"]}
+        save_admins()
+        auth_tokens[token] = True  # чтобы после регистрации сразу авторизоваться
+        return web.Response(text=f"Регистрация одобрена. Ваш пароль: {password}")
+    if token in auth_tokens and auth_tokens[token] == "pending":
+        auth_tokens[token] = True
+        return web.Response(text="Вход одобрен. Можете вернуться в панель.")
     if token in auth_tokens:
         return web.json_response({"approved": auth_tokens[token] == True})
-    if token in pending_registrations:
-        return web.json_response({"approved": False})
     return web.json_response({"approved": False})
 
 async def add_admin(request):
@@ -1311,9 +1320,8 @@ async def send_cmd(request):
             elapsed = (time.time() - start) * 1000
             await msg.edit(f"🏓 Понг! {elapsed:.1f}ms")
         elif command == ".search":
-            results = list(google_search(args, num=5, lang="ru"))
+            results = list(google_search(args, num_results=5, lang="ru"))
             if results: await client.send_message(target, "\n".join(results))
-        # ... другие команды можно расширить
     except Exception as e:
         raise web.HTTPFound(f"/dashboard?error={str(e)}")
     await broadcast_state(); await backup_state()
@@ -1356,7 +1364,7 @@ async def guest_ws_handler(request):
     await ws.send_str(json.dumps(data, default=str, ensure_ascii=False))
     await ws.close(); return ws
 
-# API для новых функций
+# ---------- API для новых функций ----------
 async def api_notes(request):
     if request.method == 'POST':
         data = await request.post()
