@@ -13,6 +13,7 @@ import speech_recognition as sr
 from pydub import AudioSegment
 AudioSegment.converter = "/opt/render/project/src/ffmpeg"
 
+# ---------- Конфигурация из переменных окружения ----------
 API_ID = int(os.environ["API_ID"])
 API_HASH = os.environ["API_HASH"]
 SESSION_STRING_1 = os.environ["SESSION_STRING"]
@@ -36,12 +37,14 @@ ADMINS_FILE = Path("admins.json")
 HISTORY_FILE = Path("backup_history.json")
 BACKUP_LOCAL = Path("backup_local.json")
 
+# ---------- Шифрование ----------
 if BACKUP_KEY:
     ENCRYPTION_KEY = base64.urlsafe_b64encode(hashlib.sha256(BACKUP_KEY.encode()).digest())
 else:
     ENCRYPTION_KEY = base64.urlsafe_b64encode(hashlib.sha256(ADMIN_PASS.encode()).digest())
 fernet = Fernet(ENCRYPTION_KEY)
 
+# ---------- Клиенты Telegram ----------
 client1 = TelegramClient(StringSession(SESSION_STRING_1), API_ID, API_HASH)
 client2 = None
 if SESSION_STRING_2:
@@ -51,6 +54,7 @@ if SESSION_STRING_2:
 bot = None
 if BOT_TOKEN: bot = TelegramClient("auth_bot_session", API_ID, API_HASH)
 
+# ---------- Состояние ----------
 muted_chats = set()
 auto_reply_chats = {}
 auto_reply_global = {'enabled': False, 'text': '⏳ Привет! Я сейчас не в сети, отвечу позже.'}
@@ -69,6 +73,7 @@ extra_clients = {}
 backup_history = []
 backup_status = {"last_time": "", "success": False, "error": ""}
 
+# ---------- Вспомогательные функции для данных ----------
 def load_json(path, default):
     if path.exists():
         try: return json.loads(path.read_text())
@@ -108,6 +113,7 @@ def encrypt_data(data_bytes: bytes) -> bytes:
 def decrypt_data(data_bytes: bytes) -> bytes:
     return fernet.decrypt(data_bytes)
 
+# ---------- Загрузка файла на 0x0.st ----------
 async def upload_to_0x0(data_bytes: bytes) -> str:
     try:
         form = FormData()
@@ -119,6 +125,7 @@ async def upload_to_0x0(data_bytes: bytes) -> str:
         print(f"⚠️ 0x0.st upload failed: {e}")
     return ""
 
+# ---------- Бэкап состояния ----------
 async def backup_state():
     global backup_history, backup_status
     if not client2 or not client2.is_connected():
@@ -126,7 +133,14 @@ async def backup_state():
         await broadcast_state()
         return
 
-    data = {"muted_chats": list(muted_chats), "protected_users": list(protected_users), "admins": admins, "extra_clients": {k: {"session": v["session"]} for k, v in extra_clients.items()}, "auto_reply_global": auto_reply_global, "auto_reply_chats": auto_reply_chats}
+    data = {
+        "muted_chats": list(muted_chats),
+        "protected_users": list(protected_users),
+        "admins": admins,
+        "extra_clients": {k: {"session": v["session"]} for k, v in extra_clients.items()},
+        "auto_reply_global": auto_reply_global,
+        "auto_reply_chats": auto_reply_chats
+    }
     json_bytes = json.dumps(data, ensure_ascii=False).encode('utf-8')
     encrypted = encrypt_data(json_bytes)
     decrypted = json_bytes
@@ -140,9 +154,9 @@ async def backup_state():
         error_text = "Не удалось загрузить файлы на 0x0.st"
         print(f"❌ {error_text}")
     else:
-        # Отправляем зашифрованный файл другу в избранное
+        # Отправляем зашифрованный файл другу в Избранное
         try:
-            # Удаляем предыдущие файлы, если они есть
+            # Удаляем старые файлы
             try:
                 async for msg in client2.iter_messages('me', from_user='me', limit=10):
                     if msg.file and msg.file.name == "backup.enc":
@@ -150,7 +164,6 @@ async def backup_state():
                         print("🗑 Старый backup.enc удалён у друга")
             except Exception as del_err:
                 print(f"⚠️ Не удалось удалить старые файлы у друга: {del_err}")
-            # Отправляем новый файл
             await client2.send_file('me', io.BytesIO(encrypted), file_name="backup.enc")
             print("✅ Файл backup.enc отправлен другу в избранное")
         except Exception as e:
@@ -186,6 +199,7 @@ async def backup_state():
     backup_status = {"last_time": datetime.now().isoformat(), "success": success, "error": error_text}
     await broadcast_state()
 
+# ---------- Восстановление состояния ----------
 async def restore_state():
     global muted_chats, protected_users, admins, extra_clients, auto_reply_global, auto_reply_chats
     if not client2 or not client2.is_connected():
@@ -218,11 +232,13 @@ async def restore_state():
                 extra_clients[name] = {"session": sess, "client": client}
             except Exception as e: print(f"⚠️ Не удалось подключить {name}: {e}")
 
+# ---------- Цикл автоматического бэкапа ----------
 async def backup_loop():
     while True:
         await asyncio.sleep(BACKUP_INTERVAL)
         await backup_state()
 
+# ---------- Получение имён ----------
 async def resolve_name(user_id):
     try:
         user = await client1.get_entity(user_id)
@@ -235,6 +251,7 @@ async def resolve_chat_name(chat_id):
         return chat.title if hasattr(chat, 'title') else f"{chat.first_name or ''} {chat.last_name or ''}".strip() or str(chat_id)
     except: return str(chat_id)
 
+# ---------- Логирование команд ----------
 def log_command(user_id, command, source="Telegram", target_id=None, user_name=None, target_name=None, result=None):
     global command_history
     entry = {"time": datetime.now().isoformat(), "user_id": user_id, "user_name": user_name or str(user_id), "command": command, "source": source, "target_id": target_id, "target_name": target_name or (str(target_id) if target_id else "Избранное"), "result": result}
@@ -243,6 +260,7 @@ def log_command(user_id, command, source="Telegram", target_id=None, user_name=N
     save_json(LOG_FILE, command_history)
     asyncio.ensure_future(broadcast_state())
 
+# ---------- Рассылка состояния по WebSocket ----------
 async def broadcast_state():
     acc2_name = ACC2_DISPLAY_NAME if ACC2_DISPLAY_NAME else (await client2.get_me()).first_name if client2 else None
     owner_id = None
@@ -283,6 +301,7 @@ async def get_user_names():
         except: names[str(uid)] = await resolve_name(uid)
     return names
 
+# ---------- Инициализация защищённых пользователей ----------
 async def init_protected_users():
     me1 = await client1.get_me(); protected_users.add(me1.id)
     if client2:
@@ -296,6 +315,7 @@ async def init_protected_users():
     save_state(); await broadcast_state()
     await backup_state()
 
+# ---------- Регистрация обработчиков команд для клиента ----------
 def register_handlers(client_instance):
     @client_instance.on(events.NewMessage(outgoing=True, pattern=r'^\.mute$'))
     async def mute_cmd(event):
@@ -619,6 +639,7 @@ if client2: register_handlers(client2)
 for client_info in extra_clients.values():
     register_handlers(client_info["client"])
 
+# ---------- Обработчик callback для бота авторизации ----------
 if bot:
     @bot.on(events.CallbackQuery)
     async def auth_callback(event):
@@ -629,6 +650,7 @@ if bot:
         elif data.startswith("reject:"):
             token = data.split(":")[1]; auth_tokens.pop(token, None); await event.edit("🚫 Вход отклонён.", buttons=None)
 
+# ---------- HTML-шаблоны ----------
 HTML_LOGIN = """<html><head><meta charset="utf-8"><title>Вход</title>
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Montserrat:wght@300;600&display=swap');
@@ -921,6 +943,7 @@ ws.onmessage = function(event) {
 </script>
 </body></html>"""
 
+# ---------- Обработчики веб-панели ----------
 async def check_auth(request):
     auth = request.headers.get("Authorization")
     if auth and auth.startswith("Basic "):
@@ -1216,6 +1239,20 @@ async def start_web_server():
     print(f"🔐 Панель управления: http://.../dashboard")
     while True: await asyncio.sleep(3600)
 
+# ---------- Исправленный обработчик выключения ----------
+def shutdown_handler(signum, frame):
+    print("🔻 Завершение работы, сохраняю состояние локально...")
+    data = {
+        "muted_chats": list(muted_chats),
+        "protected_users": list(protected_users),
+        "admins": admins,
+        "extra_clients": {k: {"session": v["session"]} for k, v in extra_clients.items()},
+        "auto_reply_global": auto_reply_global,
+        "auto_reply_chats": auto_reply_chats
+    }
+    save_json(BACKUP_LOCAL, data)
+    os._exit(0)
+
 async def main():
     global http_session, client2
     http_session = ClientSession()
@@ -1232,11 +1269,6 @@ async def main():
     await restore_state()
     asyncio.create_task(backup_loop())
 
-    def shutdown_handler(signum, frame):
-        print("🔻 Завершение работы, сохраняю состояние локально...")
-        data = {"muted_chats": list(muted_chats), "protected_users": list(protected_users), "admins": admins, "extra_clients": {k: {"session": v["session"]} for k, v in extra_clients.items()}, "auto_reply_global": auto_reply_global, "auto_reply_chats": auto_reply_chats}
-        save_json("backup_local.json", data)
-        os._exit(0)
     signal.signal(signal.SIGTERM, shutdown_handler)
 
     await start_web_server()
