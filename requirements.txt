@@ -6,4 +6,6 @@ gTTS
 pydub
 SpeechRecognition
 cryptography
-googlesearch-python
+duckduckgo-search
+beautifulsoup4
+requests
