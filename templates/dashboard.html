@@ -35,6 +35,19 @@
     .notification { position: fixed; top: 1rem; right: 1rem; background: #238636; color: white; padding: 0.8rem 1.2rem; border-radius: 8px; display: none; z-index: 999; }
     input, select, textarea { background: #13131f; color: white; border: 1px solid #30363d; border-radius: 6px; padding: 0.5rem; }
     .widget { background: var(--card); border: 1px solid rgba(255,255,255,0.05); border-radius: 8px; padding: 1rem; margin-bottom: 1rem; }
+    .chat-container { display: flex; height: 70vh; }
+    .chat-list { width: 30%; overflow-y: auto; border-right: 1px solid #30363d; }
+    .chat-messages { width: 70%; display: flex; flex-direction: column; }
+    .messages-list { flex: 1; overflow-y: auto; padding: 0.5rem; }
+    .message { margin-bottom: 0.5rem; }
+    .message.out { text-align: right; }
+    .message.in { text-align: left; }
+    .message-text { display: inline-block; background: #1e1e2e; padding: 0.3rem 0.6rem; border-radius: 8px; max-width: 80%; }
+    .message.out .message-text { background: #e94560; }
+    .input-area { display: flex; gap: 0.5rem; padding: 0.5rem; }
+    .input-area input { flex: 1; }
+    .dialog-item { padding: 0.5rem; cursor: pointer; border-bottom: 1px solid #30363d; }
+    .dialog-item:hover { background: #1e1e2e; }
     @media (max-width: 768px) { .tabs { flex-wrap: nowrap; } }
   </style>
 </head>
@@ -62,6 +75,7 @@
     <button data-tab="filters">🔍 Фильтры</button>
     <button data-tab="schedule">⏰ Планировщик</button>
     <button data-tab="stats">📊 Статистика</button>
+    <button data-tab="chats">💬 Чаты</button>
   </div>
   <div class="content">
     <div id="muted" class="tab-pane active">
@@ -154,10 +168,28 @@
     <div id="stats" class="tab-pane">
       <canvas id="statsChart" width="400" height="200"></canvas>
     </div>
+    <!-- Вкладка "Чаты" -->
+    <div id="chats" class="tab-pane">
+      <div style="margin-bottom:0.5rem;">
+        <select id="chatAccountSelect" onchange="loadChats()">
+          <!-- заполняется динамически -->
+        </select>
+      </div>
+      <div class="chat-container">
+        <div class="chat-list" id="dialogList"></div>
+        <div class="chat-messages">
+          <div class="messages-list" id="messagesList"></div>
+          <div class="input-area">
+            <input type="text" id="messageInput" placeholder="Введите сообщение..." disabled>
+            <button class="btn-custom" onclick="sendMessage()" id="sendBtn" disabled>Отправить</button>
+          </div>
+        </div>
+      </div>
+    </div>
   </div>
   <div id="notification" class="notification"></div>
   <script>
-    var ws, fullHistory=[], acc1Name="Аккаунт 1", acc2Name="Аккаунт 2", extraAccounts=[], backupHistory=[], afkUsers={}, notes="", filters={}, blacklist=[], schedule=[], activeAccount="1", theme="dark";
+    var ws, fullHistory=[], acc1Name="Аккаунт 1", acc2Name="Аккаунт 2", extraAccounts=[], backupHistory=[], afkUsers={}, notes="", filters={}, blacklist=[], schedule=[], activeAccount="1", theme="dark", activeChatId=null;
 
     function showNotification(text, isError) {
       isError = isError || false;
@@ -171,6 +203,11 @@
     window.addEventListener('load', function() {
       connectWS();
       document.getElementById('activeAccountSelect').addEventListener('change', function() { setActiveAccount(this.value); });
+      // Заполняем селектор аккаунтов для чатов
+      var chatSel = document.getElementById('chatAccountSelect');
+      chatSel.innerHTML = '';
+      chatSel.add(new Option('Аккаунт 1', '1'));
+      // обновится позже через WebSocket
     });
 
     function connectWS() {
@@ -212,6 +249,14 @@
         recentHtml += '<div>' + e.time.substr(11,8) + ' ' + e.command + '</div>';
       });
       document.getElementById('recentEvents').innerHTML = recentHtml || 'Нет событий';
+
+      // обновляем селектор для чатов
+      var chatSel = document.getElementById('chatAccountSelect');
+      chatSel.innerHTML = '';
+      chatSel.add(new Option(acc1Name, '1'));
+      if (acc2Name) chatSel.add(new Option(acc2Name, '2'));
+      extraAccounts.forEach(function(name) { chatSel.add(new Option(name, name)); });
+      chatSel.value = activeAccount;
 
       renderMuted(data);
       renderProtected(data);
@@ -406,6 +451,47 @@
       await fetch('/api/toggle_autoreply');
     }
 
+    // Функции для чатов
+    async function loadChats() {
+      var account = document.getElementById('chatAccountSelect').value;
+      var resp = await fetch('/api/chats?account=' + account);
+      var dialogs = await resp.json();
+      var html = '';
+      dialogs.forEach(function(d) {
+        html += '<div class="dialog-item" onclick="openChat(' + d.id + ', \'' + d.name.replace(/'/g, "\\'") + '\')">' + d.name + '</div>';
+      });
+      document.getElementById('dialogList').innerHTML = html;
+    }
+
+    async function openChat(id, name) {
+      activeChatId = id;
+      document.getElementById('messageInput').disabled = false;
+      document.getElementById('sendBtn').disabled = false;
+      document.getElementById('messagesList').innerHTML = '<i>Загрузка...</i>';
+      var account = document.getElementById('chatAccountSelect').value;
+      var resp = await fetch('/api/messages?account=' + account + '&chat_id=' + id);
+      var messages = await resp.json();
+      var html = '';
+      messages.reverse().forEach(function(msg) {
+        var cls = msg.out ? 'out' : 'in';
+        html += '<div class="message ' + cls + '"><div class="message-text">' + (msg.text || '') + '</div><div style="font-size:0.7rem;">' + msg.date.substr(11,8) + '</div></div>';
+      });
+      document.getElementById('messagesList').innerHTML = html;
+    }
+
+    async function sendMessage() {
+      if (!activeChatId) return;
+      var text = document.getElementById('messageInput').value.trim();
+      if (!text) return;
+      var account = document.getElementById('chatAccountSelect').value;
+      await fetch('/api/send_message', {
+        method: 'POST',
+        body: new URLSearchParams({account: account, chat_id: activeChatId, text: text})
+      });
+      document.getElementById('messageInput').value = '';
+      openChat(activeChatId, '');
+    }
+
     document.querySelectorAll('.tabs button').forEach(function(btn) {
       btn.addEventListener('click', function() {
         document.querySelectorAll('.tabs button').forEach(function(b) { b.classList.remove('active'); });
@@ -413,6 +499,7 @@
         document.querySelectorAll('.tab-pane').forEach(function(p) { p.classList.remove('active'); });
         document.getElementById(this.dataset.tab).classList.add('active');
         if (this.dataset.tab === 'stats') updateStatsChart();
+        if (this.dataset.tab === 'chats') loadChats();
       });
     });
   </script>
