@@ -515,9 +515,12 @@
       var html = '';
       messages.reverse().forEach(function(msg) {
         var cls = msg.out ? 'out' : 'in';
-        html += '<div class="message ' + cls + '"><div class="message-text">' + (msg.text || '') + '</div><div style="font-size:0.7rem;">' + msg.date.substr(11,8) + '</div></div>';
+        html += '<div class="message ' + cls + '"><div class="message-text">' + (msg.text || '') + '</div><div style="font-size:0.7rem;">' + msg.date.substr(11,8) + ' ' + (msg.sender||'') + ' <button class="btn-custom" onclick="deleteMessage(' + msg.id + ')" style="font-size:0.6rem;padding:0.1rem 0.3rem;">Удалить</button></div></div>';
       });
       document.getElementById('messagesList').innerHTML = html;
+      // Прокручиваем вниз
+      var msgList = document.getElementById('messagesList');
+      msgList.scrollTop = msgList.scrollHeight;
     }
 
     async function sendMessage() {
@@ -530,9 +533,18 @@
         body: new URLSearchParams({account: account, chat_id: activeChatId, text: text})
       });
       document.getElementById('messageInput').value = '';
-      // Перезагружаем чаты, чтобы переместить активный чат наверх
+      // Перезагружаем чаты и сообщения
       loadChats();
-      // Обновляем сообщения
+      openChat(activeChatId, '');
+    }
+
+    async function deleteMessage(msgId) {
+      if (!activeChatId) return;
+      var account = document.getElementById('chatAccountSelect').value;
+      await fetch('/api/delete_message', {
+        method: 'POST',
+        body: new URLSearchParams({account: account, chat_id: activeChatId, msg_id: msgId})
+      });
       openChat(activeChatId, '');
     }
 
