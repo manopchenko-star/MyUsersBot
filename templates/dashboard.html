@@ -48,6 +48,7 @@
     .input-area input { flex: 1; }
     .dialog-item { padding: 0.5rem; cursor: pointer; border-bottom: 1px solid #30363d; }
     .dialog-item:hover { background: #1e1e2e; }
+    .log-container { height:60vh; overflow-y:auto; background:#0a0a0a; padding:0.5rem; font-family:monospace; font-size:0.8rem; }
     @media (max-width: 768px) { .tabs { flex-wrap: nowrap; } }
   </style>
 </head>
@@ -76,6 +77,7 @@
     <button data-tab="schedule">⏰ Планировщик</button>
     <button data-tab="stats">📊 Статистика</button>
     <button data-tab="chats">💬 Чаты</button>
+    <button data-tab="logs">📄 Логи</button>
   </div>
   <div class="content">
     <div id="muted" class="tab-pane active">
@@ -168,11 +170,9 @@
     <div id="stats" class="tab-pane">
       <canvas id="statsChart" width="400" height="200"></canvas>
     </div>
-    <!-- Вкладка "Чаты" -->
     <div id="chats" class="tab-pane">
       <div style="margin-bottom:0.5rem;">
         <select id="chatAccountSelect" onchange="loadChats()">
-          <!-- заполняется динамически -->
         </select>
       </div>
       <div class="chat-container">
@@ -180,16 +180,23 @@
         <div class="chat-messages">
           <div class="messages-list" id="messagesList"></div>
           <div class="input-area">
-            <input type="text" id="messageInput" placeholder="Введите сообщение..." disabled>
+            <input type="text" id="messageInput" placeholder="Введите сообщение и нажмите Enter..." disabled>
             <button class="btn-custom" onclick="sendMessage()" id="sendBtn" disabled>Отправить</button>
           </div>
         </div>
       </div>
     </div>
+    <div id="logs" class="tab-pane">
+      <div style="margin-bottom:0.5rem;">
+        <input type="text" id="logSearch" placeholder="Поиск по чату, юзеру, тексту..." oninput="filterLogs()" style="width:300px;">
+      </div>
+      <div class="log-container" id="logContainer"></div>
+    </div>
   </div>
   <div id="notification" class="notification"></div>
   <script>
     var ws, fullHistory=[], acc1Name="Аккаунт 1", acc2Name="Аккаунт 2", extraAccounts=[], backupHistory=[], afkUsers={}, notes="", filters={}, blacklist=[], schedule=[], activeAccount="1", theme="dark", activeChatId=null;
+    var allLogs = [];
 
     function showNotification(text, isError) {
       isError = isError || false;
@@ -203,16 +210,31 @@
     window.addEventListener('load', function() {
       connectWS();
       document.getElementById('activeAccountSelect').addEventListener('change', function() { setActiveAccount(this.value); });
-      // Заполняем селектор аккаунтов для чатов
-      var chatSel = document.getElementById('chatAccountSelect');
-      chatSel.innerHTML = '';
-      chatSel.add(new Option('Аккаунт 1', '1'));
-      // обновится позже через WebSocket
+      document.getElementById('messageInput').addEventListener('keypress', function(e) {
+        if (e.key === 'Enter') {
+          e.preventDefault();
+          sendMessage();
+        }
+      });
     });
 
     function connectWS() {
       ws = new WebSocket('wss://' + location.host + '/ws');
-      ws.onmessage = function(e) { updateUI(JSON.parse(e.data)); };
+      ws.onmessage = function(e) {
+        var data = JSON.parse(e.data);
+        if (data.event === "logs_init") {
+          allLogs = data.logs || [];
+          renderLogs(allLogs);
+        } else if (data.event === "log") {
+          allLogs.push({time: data.time, type: data.type, text: data.text});
+          if (allLogs.length > 500) allLogs.shift();
+          if (document.getElementById('logs').classList.contains('active')) {
+            filterLogs();
+          }
+        } else {
+          updateUI(data);
+        }
+      };
       ws.onclose = function() { setTimeout(connectWS, 3000); };
     }
 
@@ -250,7 +272,6 @@
       });
       document.getElementById('recentEvents').innerHTML = recentHtml || 'Нет событий';
 
-      // обновляем селектор для чатов
       var chatSel = document.getElementById('chatAccountSelect');
       chatSel.innerHTML = '';
       chatSel.add(new Option(acc1Name, '1'));
@@ -451,17 +472,29 @@
       await fetch('/api/toggle_autoreply');
     }
 
-    // Функции для чатов
     async function loadChats() {
       var account = document.getElementById('chatAccountSelect').value;
       var resp = await fetch('/api/chats?account=' + account);
       var dialogs = await resp.json();
+      dialogs.sort(function(a, b) {
+        if (a.pinned && !b.pinned) return -1;
+        if (!a.pinned && b.pinned) return 1;
+        var dateA = a.date ? new Date(a.date) : new Date(0);
+        var dateB = b.date ? new Date(b.date) : new Date(0);
+        return dateB - dateA;
+      });
       var html = '';
       dialogs.forEach(function(d) {
-        html += '<div class="dialog-item" onclick="openChat(' + d.id + ', \'' + d.name.replace(/'/g, "\\'") + '\')">' + d.name + '</div>';
+        var pinIcon = d.pinned ? '📌 ' : '';
+        html += '<div class="dialog-item" onclick="openChat(' + d.id + ', \'' + d.name.replace(/'/g, "\\'") + '\')">' + pinIcon + d.name + '</div>';
       });
       document.getElementById('dialogList').innerHTML = html;
     }
+    setInterval(function() {
+      if (document.getElementById('chats').classList.contains('active')) {
+        loadChats();
+      }
+    }, 5000);
 
     async function openChat(id, name) {
       activeChatId = id;
@@ -492,6 +525,23 @@
       openChat(activeChatId, '');
     }
 
+    function filterLogs() {
+      var query = document.getElementById('logSearch').value.toLowerCase();
+      var filtered = allLogs.filter(function(l) {
+        return l.text.toLowerCase().includes(query) || l.type.toLowerCase().includes(query);
+      });
+      renderLogs(filtered);
+    }
+
+    function renderLogs(logs) {
+      var html = '';
+      logs.slice(-100).forEach(function(l) {
+        var color = l.type === 'ERROR' ? '#da3633' : l.type === 'WARN' ? '#e3b341' : '#7ee787';
+        html += '<div style="color:' + color + ';">[' + l.time + '] ' + l.type + ' ' + l.text + '</div>';
+      });
+      document.getElementById('logContainer').innerHTML = html || 'Нет записей';
+    }
+
     document.querySelectorAll('.tabs button').forEach(function(btn) {
       btn.addEventListener('click', function() {
         document.querySelectorAll('.tabs button').forEach(function(b) { b.classList.remove('active'); });
@@ -500,6 +550,7 @@
         document.getElementById(this.dataset.tab).classList.add('active');
         if (this.dataset.tab === 'stats') updateStatsChart();
         if (this.dataset.tab === 'chats') loadChats();
+        if (this.dataset.tab === 'logs') filterLogs();
       });
     });
   </script>
