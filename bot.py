@@ -11,7 +11,9 @@ import qrcode as qrcode_lib
 from gtts import gTTS
 import speech_recognition as sr
 from pydub import AudioSegment
-from googlesearch import search as google_search
+from duckduckgo_search import DDGS
+from bs4 import BeautifulSoup
+import requests
 
 AudioSegment.converter = "/opt/render/project/src/ffmpeg"
 
@@ -133,6 +135,24 @@ last_backup_msg_id = load_json(LAST_MSG_FILE, None)
 def encrypt_data(data_bytes): return fernet.encrypt(data_bytes)
 def decrypt_data(data_bytes): return fernet.decrypt(data_bytes)
 
+# ---------- Поисковые функции ----------
+def yandex_search(query, num=5):
+    try:
+        url = f"https://yandex.ru/search/?text={urllib.parse.quote(query)}&lr=2"
+        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"}
+        resp = requests.get(url, headers=headers, timeout=10)
+        resp.raise_for_status()
+        soup = BeautifulSoup(resp.text, 'html.parser')
+        results = []
+        for item in soup.select('li.serp-item')[:num]:
+            link = item.select_one('a.link')
+            if link and link.get('href'):
+                results.append(link['href'])
+        return results
+    except Exception as e:
+        return [f"Ошибка: {e}"]
+
+# ---------- Бэкапы ----------
 async def cleanup_old_backups():
     global last_backup_msg_id
     if not client2 or not client2.is_connected(): return
@@ -506,7 +526,7 @@ def register_handlers(client_instance):
             "<b>.stats</b> — статистика чата\n<b>.tr код текст</b> — перевод\n<b>.addfriend</b> / .delfriend / .listfriends\n"
             "<b>.history</b> — история последних команд\n<b>.stt</b> — распознать голосовое сообщение\n<b>.qr текст</b> — QR-код\n"
             "<b>.weather город</b> — погода\n<b>.tts текст</b> — голосовое сообщение\n<b>.sticker</b> — случайный стикер\n"
-            "<b>.search запрос</b> — поиск в Google\n<b>.afk [причина]</b> / .unafk — режим AFK\n<b>.help</b> — это сообщение"
+            "<b>.search [yandex|duck] запрос</b> — поиск\n<b>.afk [причина]</b> / .unafk — режим AFK\n<b>.help</b> — это сообщение"
         )
         await event.client.send_message(event.chat_id, text, parse_mode='html')
 
@@ -601,15 +621,36 @@ def register_handlers(client_instance):
             await event.client.send_message(event.chat_id, "✅ Вы вернулись из AFK.")
             await broadcast_state()
 
-    @client_instance.on(events.NewMessage(outgoing=True, pattern=r'^\.search\s+(.*)'))
+    # Обновлённый поиск
+    @client_instance.on(events.NewMessage(outgoing=True, pattern=r'^\.search\s+(.+)'))
     async def search_cmd(event):
-        query = event.pattern_match.group(1).strip()
+        args = event.pattern_match.group(1).strip()
         await event.delete()
+        parts = args.split(maxsplit=1)
+        engine = 'duck'
+        query = args
+        if parts[0] in ('yandex', 'duck', 'google'):
+            engine = parts[0]
+            query = parts[1] if len(parts) > 1 else ''
+        if not query:
+            await event.client.send_message(event.chat_id, "Введите запрос после названия поисковика.")
+            return
         try:
-            results = list(google_search(query, num_results=5, lang="ru"))
-            if results: text = f"🔎 Результаты поиска: **{query}**\n" + "\n".join(results)
-            else: text = "Ничего не найдено."
-        except Exception as e: text = f"❌ Ошибка поиска: {e}"
+            if engine == 'yandex':
+                results = yandex_search(query)
+            elif engine == 'google':
+                results = ["Google поиск недоступен, используйте yandex или duck"]
+            else:
+                with DDGS() as ddgs:
+                    results = [r['href'] for r in ddgs.text(query, max_results=5)]
+            if results and not results[0].startswith('Ошибка'):
+                text = f"🔎 Результаты ({engine}): {query}\n" + "\n".join(results)
+            elif results and results[0].startswith('Ошибка'):
+                text = f"❌ {results[0]}"
+            else:
+                text = "Ничего не найдено."
+        except Exception as e:
+            text = f"❌ Ошибка: {e}"
         await event.client.send_message(event.chat_id, text)
 
     @client_instance.on(events.NewMessage(incoming=True))
@@ -871,8 +912,25 @@ async def send_cmd(request):
             elapsed = (time.time() - start) * 1000
             await msg.edit(f"🏓 Понг! {elapsed:.1f}ms")
         elif command == ".search":
-            results = list(google_search(args, num_results=5, lang="ru"))
-            if results: await client.send_message(target, "\n".join(results))
+            parts = args.split(maxsplit=1)
+            engine = 'duck'
+            query = args
+            if parts[0] in ('yandex', 'duck', 'google'):
+                engine = parts[0]
+                query = parts[1] if len(parts) > 1 else ''
+            if not query:
+                raise web.HTTPFound("/dashboard?error=Укажите+поисковый+запрос")
+            if engine == 'yandex':
+                results = yandex_search(query)
+            elif engine == 'google':
+                results = ["Google недоступен"]
+            else:
+                with DDGS() as ddgs:
+                    results = [r['href'] for r in ddgs.text(query, max_results=5)]
+            if results:
+                await client.send_message(target, "\n".join(results))
+            else:
+                await client.send_message(target, "Ничего не найдено.")
     except Exception as e:
         raise web.HTTPFound(f"/dashboard?error={str(e)}")
     await broadcast_state(); await backup_state()
@@ -997,7 +1055,6 @@ async def api_mass_unmute(request):
 
 async def api_unmute_all(request):
     muted_chats.clear(); save_state()
-    # уведомление владельцу
     try:
         owner = await client1.get_entity(OWNER_USERNAME)
         await client1.send_message(owner.id, "🔊 Все чаты размучены через веб-панель.")
@@ -1007,7 +1064,6 @@ async def api_unmute_all(request):
 
 async def api_toggle_autoreply(request):
     auto_reply_global['enabled'] = not auto_reply_global['enabled']
-    # уведомление владельцу
     try:
         owner = await client1.get_entity(OWNER_USERNAME)
         await client1.send_message(owner.id, f"🌐 Автоответчик {'включён' if auto_reply_global['enabled'] else 'выключен'} через веб-панель.")
