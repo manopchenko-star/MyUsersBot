@@ -87,7 +87,8 @@ blacklist = []
 schedule = []
 active_account = "1"
 theme = "dark"
-deleted_messages = {}  # {chat_id: [тексты]}
+deleted_messages = {}
+log_buffer = []
 
 HTML_LOGIN = (TEMPLATES_DIR / "login.html").read_text(encoding="utf-8")
 HTML_DASHBOARD = (TEMPLATES_DIR / "dashboard.html").read_text(encoding="utf-8")
@@ -136,6 +137,22 @@ last_backup_msg_id = load_json(LAST_MSG_FILE, None)
 def encrypt_data(data_bytes): return fernet.encrypt(data_bytes)
 def decrypt_data(data_bytes): return fernet.decrypt(data_bytes)
 
+# ---------- Логирование ----------
+def add_log(msg_type, text):
+    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    log_buffer.append({"time": ts, "type": msg_type, "text": text})
+    if len(log_buffer) > 200:
+        log_buffer.pop(0)
+    print(f"[{msg_type}] {text}")
+    asyncio.ensure_future(broadcast_log(msg_type, text, ts))
+
+async def broadcast_log(msg_type, text, ts):
+    data = {"event": "log", "time": ts, "type": msg_type, "text": text}
+    msg = json.dumps(data, ensure_ascii=False)
+    for ws in list(ws_clients):
+        try: await ws.send_str(msg)
+        except: ws_clients.discard(ws)
+
 # ---------- Поисковые функции ----------
 def yandex_search(query, num=5):
     try:
@@ -162,8 +179,10 @@ async def cleanup_old_backups():
         async for msg in client2.iter_messages('me', from_user='me'):
             if msg.file and msg.file.name == "backup.enc":
                 await msg.delete(); deleted += 1
-        if deleted: print(f"🧹 Очищено {deleted} старых бэкапов у друга"); last_backup_msg_id = None; save_json(LAST_MSG_FILE, None)
-    except Exception as e: print(f"⚠️ Ошибка при очистке старых бэкапов: {e}")
+        if deleted:
+            add_log("INFO", f"🧹 Очищено {deleted} старых бэкапов у друга")
+            last_backup_msg_id = None; save_json(LAST_MSG_FILE, None)
+    except Exception as e: add_log("ERROR", f"Ошибка при очистке старых бэкапов: {e}")
 
 async def backup_state():
     global backup_history, backup_status, last_backup_msg_id
@@ -177,13 +196,13 @@ async def backup_state():
     success = False; error_text = ""
     if last_backup_msg_id:
         try: await client2.delete_messages('me', last_backup_msg_id)
-        except Exception as e: print(f"⚠️ Не удалось удалить старый бэкап: {e}")
+        except Exception as e: add_log("WARN", f"Не удалось удалить старый бэкап: {e}")
         last_backup_msg_id = None; save_json(LAST_MSG_FILE, None)
     try:
         msg = await client2.send_file('me', io.BytesIO(encrypted), file_name="backup.enc")
         last_backup_msg_id = msg.id; save_json(LAST_MSG_FILE, last_backup_msg_id)
-        success = True; print(f"✅ Бэкап отправлен другу (id={msg.id})")
-    except Exception as e: error_text = f"Ошибка отправки другу: {e}"; print(f"❌ {error_text}")
+        success = True; add_log("INFO", f"Бэкап отправлен другу (id={msg.id})")
+    except Exception as e: error_text = f"Ошибка отправки другу: {e}"; add_log("ERROR", error_text)
     if success:
         try:
             owner = await client1.get_entity(OWNER_USERNAME)
@@ -192,7 +211,8 @@ async def backup_state():
                     if msg.text and "✅ Бэкап сделан" in msg.text: await msg.delete()
             except: pass
             await client1.send_message(owner.id, "✅ Бэкап сделан")
-        except Exception as e: print(f"⚠️ Не удалось уведомить владельца: {e}")
+            add_log("INFO", "Уведомление о бэкапе отправлено владельцу")
+        except Exception as e: add_log("WARN", f"Не удалось уведомить владельца: {e}")
     entry = {"time": datetime.now().isoformat(), "success": success, "error": error_text}
     backup_history.append(entry)
     if len(backup_history) > 20: backup_history = backup_history[-20:]
@@ -208,7 +228,7 @@ async def restore_state():
         async for msg in client2.iter_messages('me', from_user='me', limit=1):
             if msg.file and msg.file.name == "backup.enc":
                 encrypted = await msg.download_media(bytes); data = json.loads(decrypt_data(encrypted)); break
-    except Exception as e: print(f"⚠️ Ошибка восстановления: {e}")
+    except Exception as e: add_log("WARN", f"Ошибка восстановления: {e}")
     if not data:
         local = load_json(BACKUP_LOCAL, None)
         if local: data = local
@@ -223,7 +243,7 @@ async def restore_state():
             try:
                 client = TelegramClient(StringSession(sess), API_ID, API_HASH)
                 await client.start(); extra_clients[name] = {"session": sess, "client": client}
-            except Exception as e: print(f"⚠️ Не удалось подключить {name}: {e}")
+            except Exception as e: add_log("WARN", f"Не удалось подключить {name}: {e}")
 
 async def backup_loop():
     while True:
@@ -252,7 +272,7 @@ async def schedule_runner():
                                 for _ in range(count): await client.send_message(target, text); await asyncio.sleep(0.4)
                     schedule.remove(task); save_schedule()
             except Exception as e:
-                print(f"Ошибка выполнения задачи {task}: {e}")
+                add_log("ERROR", f"Ошибка выполнения задачи {task}: {e}")
                 schedule.remove(task); save_schedule()
         await asyncio.sleep(30)
 
@@ -286,6 +306,10 @@ async def broadcast_state():
     for ws in list(ws_clients):
         try: await ws.send_str(msg)
         except: ws_clients.discard(ws)
+    logs = log_buffer[-50:]
+    for ws in list(ws_clients):
+        try: await ws.send_str(json.dumps({"event": "logs_init", "logs": logs}, ensure_ascii=False))
+        except: ws_clients.discard(ws)
 
 async def get_chat_names():
     names = {}
@@ -306,10 +330,10 @@ async def init_protected_users():
     me1 = await client1.get_me(); protected_users.add(me1.id)
     if client2:
         try: me2 = await client2.get_me(); protected_users.add(me2.id)
-        except Exception as e: print(f"⚠️ Не удалось получить данные второго аккаунта: {e}")
+        except Exception as e: add_log("WARN", f"Не удалось получить данные второго аккаунта: {e}")
     try:
         owner = await client1.get_entity(OWNER_USERNAME); protected_users.add(owner.id)
-    except Exception as e: print(f"⚠️ Не удалось найти владельца {OWNER_USERNAME}: {e}")
+    except Exception as e: add_log("WARN", f"Не удалось найти владельца {OWNER_USERNAME}: {e}")
     save_state(); await broadcast_state(); await backup_state()
 
 # ---------- Обработчики команд ----------
@@ -321,6 +345,7 @@ def register_handlers(client_instance):
         muted_chats.add(event.chat_id); save_state(); await event.delete()
         user_name = await resolve_name(event.sender_id); target_name = await resolve_chat_name(event.chat_id)
         log_command(event.sender_id, ".mute", source="Telegram", target_id=event.chat_id, user_name=user_name, target_name=target_name, result="ok")
+        add_log("CMD", f"Мут чата {target_name} ({event.chat_id})")
         text = "🔇 <b>Пользователь заглушен</b>\nВсе его сообщения будут <i>мгновенно удаляться</i>.\n\nНажмите кнопку ниже, чтобы размутить."
         buttons = [Button.inline("🔊 Размутить", b"unmute")]
         await event.client.send_message(event.chat_id, text, buttons=buttons, parse_mode='html')
@@ -331,6 +356,7 @@ def register_handlers(client_instance):
         muted_chats.discard(event.chat_id); save_state(); await event.delete()
         user_name = await resolve_name(event.sender_id); target_name = await resolve_chat_name(event.chat_id)
         log_command(event.sender_id, ".unmute", source="Telegram", target_id=event.chat_id, user_name=user_name, target_name=target_name, result="ok")
+        add_log("CMD", f"Размут чата {target_name} ({event.chat_id})")
         await event.client.send_message(event.chat_id, "🔊 <b>Мут снят.</b> Сообщения больше не удаляются.", parse_mode='html')
         await broadcast_state(); await backup_state()
 
@@ -338,7 +364,6 @@ def register_handlers(client_instance):
     async def delete_muted(event):
         if event.chat_id in muted_chats and not event.out:
             if event.sender_id not in protected_users:
-                # сохраняем текст перед удалением
                 if event.text:
                     cid = event.chat_id
                     if cid not in deleted_messages:
@@ -346,6 +371,7 @@ def register_handlers(client_instance):
                     deleted_messages[cid].append(event.text)
                     if len(deleted_messages[cid]) > 50:
                         deleted_messages[cid] = deleted_messages[cid][-50:]
+                    add_log("DEL", f"Удалено сообщение из чата {event.chat_id}: {event.text[:50]}...")
                 try: await event.delete()
                 except: pass
 
@@ -354,6 +380,7 @@ def register_handlers(client_instance):
         muted_chats.discard(event.chat_id); save_state()
         user_name = await resolve_name(event.sender_id); target_name = await resolve_chat_name(event.chat_id)
         log_command(event.sender_id, "Размутил (кнопка)", source="Telegram", target_id=event.chat_id, user_name=user_name, target_name=target_name, result="ok")
+        add_log("CMD", f"Размут чата {target_name} ({event.chat_id}) через кнопку")
         await event.edit("🔊 <b>Мут снят.</b>", buttons=None, parse_mode='html')
         await broadcast_state(); await backup_state()
 
@@ -631,7 +658,6 @@ def register_handlers(client_instance):
             await event.client.send_message(event.chat_id, "✅ Вы вернулись из AFK.")
             await broadcast_state()
 
-    # Обновлённый поиск
     @client_instance.on(events.NewMessage(outgoing=True, pattern=r'^\.search\s+(.+)'))
     async def search_cmd(event):
         args = event.pattern_match.group(1).strip()
@@ -663,7 +689,6 @@ def register_handlers(client_instance):
             text = f"❌ Ошибка: {e}"
         await event.client.send_message(event.chat_id, text)
 
-    # Команда .recover
     @client_instance.on(events.NewMessage(outgoing=True, pattern=r'^\.recover(?:\s+(\d+))?'))
     async def recover_cmd(event):
         num = int(event.pattern_match.group(1)) if event.pattern_match.group(1) else 5
@@ -715,24 +740,28 @@ if bot:
             if token in auth_tokens:
                 auth_tokens[token] = True
                 await event.edit("✅ Вход одобрен.", buttons=None)
+                add_log("AUTH", "Вход одобрен через бота")
             elif token in pending_registrations:
                 info = pending_registrations.pop(token)
                 password = uuid.uuid4().hex[:8]
                 admins[info["name"]] = {"password": hash_password(password), "role": info["role"]}
                 save_admins()
                 await event.edit(f"✅ Пользователь {info['name']} добавлен как {info['role']}. Пароль: {password}", buttons=None)
+                add_log("AUTH", f"Новый пользователь {info['name']} зарегистрирован")
         elif data.startswith("reject:"):
             token = data.split(":")[1]
             auth_tokens.pop(token, None)
             if token in pending_registrations:
                 pending_registrations.pop(token)
             await event.edit("🚫 Вход отклонён.", buttons=None)
+            add_log("AUTH", "Вход отклонён")
 
     @bot.on(events.NewMessage(pattern=r'^/mute\s+(\S+)'))
     async def bot_mute(event):
         chat_id = int(event.pattern_match.group(1))
         muted_chats.add(chat_id); save_state()
         await event.reply("Чат заглушен.")
+        add_log("CMD", f"Бот: мут чата {chat_id}")
         await broadcast_state(); await backup_state()
 
     @bot.on(events.NewMessage(pattern=r'^/unmute\s+(\S+)'))
@@ -740,12 +769,14 @@ if bot:
         chat_id = int(event.pattern_match.group(1))
         muted_chats.discard(chat_id); save_state()
         await event.reply("Чат размучен.")
+        add_log("CMD", f"Бот: размут чата {chat_id}")
         await broadcast_state(); await backup_state()
 
     @bot.on(events.NewMessage(pattern=r'^/unmuteall'))
     async def bot_unmuteall(event):
         muted_chats.clear(); save_state()
         await event.reply("Все чаты размучены.")
+        add_log("CMD", "Бот: сняты все муты")
         await broadcast_state(); await backup_state()
 
     @bot.on(events.NewMessage(pattern=r'^/autoreply\s+(on|off)'))
@@ -753,6 +784,7 @@ if bot:
         state = event.pattern_match.group(1)
         auto_reply_global['enabled'] = (state == 'on')
         await event.reply(f"Автоответчик {'включён' if state == 'on' else 'выключен'}.")
+        add_log("CMD", f"Бот: автоответчик {state}")
         await broadcast_state(); await backup_state()
 
     @bot.on(events.NewMessage(pattern=r'^/status'))
@@ -793,6 +825,7 @@ async def auth_login(request):
         auth_tokens["password_ok"] = True
         resp = web.HTTPFound("/dashboard")
         resp.set_cookie("auth_token", "password_ok")
+        add_log("AUTH", f"Вход в панель: {username}")
         return resp
     return web.HTTPFound("/login?error=1")
 
@@ -984,6 +1017,8 @@ async def websocket_handler(request):
     ws = web.WebSocketResponse(); await ws.prepare(request); ws_clients.add(ws)
     initial = {"muted_chats": list(muted_chats), "protected_users": list(protected_users), "history": command_history, "chat_names": await get_chat_names(), "user_names": await get_user_names(), "acc1_name": (await client1.get_me()).first_name or "Аккаунт 1", "acc2_name": ACC2_DISPLAY_NAME if ACC2_DISPLAY_NAME else (await client2.get_me()).first_name if client2 else None, "admins": list(admins.keys()), "extra_clients": list(extra_clients.keys()), "backup_history": backup_history[-20:], "backup_status": backup_status, "afk_users": afk_users, "notes": notes, "auto_reply_global": auto_reply_global, "active_account": active_account, "theme": theme, "filters": filters, "blacklist": blacklist, "schedule": schedule}
     await ws.send_str(json.dumps(initial, default=str, ensure_ascii=False))
+    logs = log_buffer[-50:]
+    await ws.send_str(json.dumps({"event": "logs_init", "logs": logs}, ensure_ascii=False))
     try:
         async for msg in ws: pass
     finally: ws_clients.discard(ws)
@@ -1109,7 +1144,9 @@ async def api_chats(request):
                 "id": d.id,
                 "name": d.name,
                 "unread": d.unread_count,
-                "last_message": d.message.text if d.message and d.message.text else ""
+                "last_message": d.message.text if d.message and d.message.text else "",
+                "date": d.message.date.isoformat() if d.message and d.message.date else "",
+                "pinned": d.pinned
             })
     except Exception as e:
         return web.json_response({"error": str(e)})
@@ -1193,11 +1230,11 @@ app.router.add_post("/api/send_message", api_send_message)
 async def start_web_server():
     runner = web.AppRunner(app); await runner.setup()
     site = web.TCPSite(runner, "0.0.0.0", PORT); await site.start()
-    print(f"🔐 Панель управления: http://.../dashboard")
+    add_log("INFO", f"🔐 Панель управления запущена на порту {PORT}")
     while True: await asyncio.sleep(3600)
 
 def shutdown_handler(signum, frame):
-    print("🔻 Завершение работы, сохраняю состояние локально...")
+    add_log("INFO", "🔻 Завершение работы, сохраняю состояние локально...")
     data = {"muted_chats": list(muted_chats), "protected_users": list(protected_users), "admins": admins, "extra_clients": {k: {"session": v["session"]} for k, v in extra_clients.items()}, "auto_reply_global": auto_reply_global, "auto_reply_chats": auto_reply_chats}
     save_json(BACKUP_LOCAL, data)
     os._exit(0)
@@ -1205,15 +1242,15 @@ def shutdown_handler(signum, frame):
 async def main():
     global http_session, client2
     http_session = ClientSession()
-    await client1.start(); print("✅ Аккаунт 1 запущен")
+    await client1.start(); add_log("INFO", "✅ Аккаунт 1 запущен")
     if client2:
-        try: await client2.start(); print("✅ Аккаунт 2 запущен")
-        except Exception as e: print(f"⚠️ Не удалось запустить второй аккаунт: {e}"); client2 = None
+        try: await client2.start(); add_log("INFO", "✅ Аккаунт 2 запущен")
+        except Exception as e: add_log("ERROR", f"Не удалось запустить второй аккаунт: {e}"); client2 = None
     if bot:
         while True:
-            try: await bot.start(bot_token=BOT_TOKEN); print("🤖 Бот авторизации запущен"); break
-            except FloodWaitError as e: print(f"⏳ FloodWait: ждём {e.seconds} сек"); await asyncio.sleep(e.seconds)
-            except Exception as e: print(f"⚠️ Не удалось запустить бота: {e}"); break
+            try: await bot.start(bot_token=BOT_TOKEN); add_log("INFO", "🤖 Бот авторизации запущен"); break
+            except FloodWaitError as e: add_log("WARN", f"FloodWait: ждём {e.seconds} сек"); await asyncio.sleep(e.seconds)
+            except Exception as e: add_log("ERROR", f"Не удалось запустить бота: {e}"); break
     await cleanup_old_backups()
     await init_protected_users()
     await restore_state()
