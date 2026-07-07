@@ -17,7 +17,6 @@ import requests
 
 AudioSegment.converter = "/opt/render/project/src/ffmpeg"
 
-# ---------- Конфигурация ----------
 API_ID = int(os.environ["API_ID"])
 API_HASH = os.environ["API_HASH"]
 SESSION_STRING_1 = os.environ["SESSION_STRING"]
@@ -137,7 +136,6 @@ last_backup_msg_id = load_json(LAST_MSG_FILE, None)
 def encrypt_data(data_bytes): return fernet.encrypt(data_bytes)
 def decrypt_data(data_bytes): return fernet.decrypt(data_bytes)
 
-# ---------- Логирование ----------
 def add_log(msg_type, text):
     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     log_buffer.append({"time": ts, "type": msg_type, "text": text})
@@ -153,7 +151,6 @@ async def broadcast_log(msg_type, text, ts):
         try: await ws.send_str(msg)
         except: ws_clients.discard(ws)
 
-# ---------- Поисковые функции ----------
 def yandex_search(query, num=5):
     try:
         url = f"https://yandex.ru/search/?text={urllib.parse.quote(query)}&lr=2"
@@ -170,7 +167,6 @@ def yandex_search(query, num=5):
     except Exception as e:
         return [f"Ошибка: {e}"]
 
-# ---------- Бэкапы ----------
 async def cleanup_old_backups():
     global last_backup_msg_id
     if not client2 or not client2.is_connected(): return
@@ -1140,13 +1136,17 @@ async def api_chats(request):
     dialogs = []
     try:
         async for d in client.iter_dialogs(limit=50):
+            username = ''
+            if hasattr(d.entity, 'username') and d.entity.username:
+                username = d.entity.username
             dialogs.append({
                 "id": d.id,
                 "name": d.name,
                 "unread": d.unread_count,
                 "last_message": d.message.text if d.message and d.message.text else "",
                 "date": d.message.date.isoformat() if d.message and d.message.date else "",
-                "pinned": d.pinned
+                "pinned": d.pinned,
+                "username": username
             })
     except Exception as e:
         return web.json_response({"error": str(e)})
@@ -1163,11 +1163,17 @@ async def api_messages(request):
     messages = []
     try:
         async for msg in client.iter_messages(chat_id, limit=30, offset_id=offset_id):
+            sender = ''
+            if msg.sender:
+                sender = msg.sender.first_name or ''
+                if msg.sender.username:
+                    sender += f" (@{msg.sender.username})"
             messages.append({
                 "id": msg.id,
                 "date": msg.date.isoformat(),
                 "text": msg.text or "",
-                "out": msg.out
+                "out": msg.out,
+                "sender": sender
             })
     except Exception as e:
         return web.json_response({"error": str(e)})
@@ -1184,6 +1190,21 @@ async def api_send_message(request):
     elif account_id in extra_clients: client = extra_clients[account_id]["client"]
     try:
         await client.send_message(chat_id, text, silent=True)
+    except Exception as e:
+        return web.json_response({"error": str(e)})
+    return web.json_response({"ok": True})
+
+async def api_delete_message(request):
+    user = await check_auth(request)
+    data = await request.post()
+    account_id = data.get("account", active_account)
+    chat_id = int(data.get("chat_id"))
+    msg_id = int(data.get("msg_id"))
+    client = client1
+    if account_id == "2" and client2: client = client2
+    elif account_id in extra_clients: client = extra_clients[account_id]["client"]
+    try:
+        await client.delete_messages(chat_id, msg_id)
     except Exception as e:
         return web.json_response({"error": str(e)})
     return web.json_response({"ok": True})
@@ -1226,6 +1247,7 @@ app.router.add_get("/api/toggle_autoreply", api_toggle_autoreply)
 app.router.add_get("/api/chats", api_chats)
 app.router.add_get("/api/messages", api_messages)
 app.router.add_post("/api/send_message", api_send_message)
+app.router.add_post("/api/delete_message", api_delete_message)
 
 async def start_web_server():
     runner = web.AppRunner(app); await runner.setup()
