@@ -87,6 +87,7 @@ blacklist = []
 schedule = []
 active_account = "1"
 theme = "dark"
+deleted_messages = {}  # {chat_id: [тексты]}
 
 HTML_LOGIN = (TEMPLATES_DIR / "login.html").read_text(encoding="utf-8")
 HTML_DASHBOARD = (TEMPLATES_DIR / "dashboard.html").read_text(encoding="utf-8")
@@ -337,6 +338,14 @@ def register_handlers(client_instance):
     async def delete_muted(event):
         if event.chat_id in muted_chats and not event.out:
             if event.sender_id not in protected_users:
+                # сохраняем текст перед удалением
+                if event.text:
+                    cid = event.chat_id
+                    if cid not in deleted_messages:
+                        deleted_messages[cid] = []
+                    deleted_messages[cid].append(event.text)
+                    if len(deleted_messages[cid]) > 50:
+                        deleted_messages[cid] = deleted_messages[cid][-50:]
                 try: await event.delete()
                 except: pass
 
@@ -526,7 +535,8 @@ def register_handlers(client_instance):
             "<b>.stats</b> — статистика чата\n<b>.tr код текст</b> — перевод\n<b>.addfriend</b> / .delfriend / .listfriends\n"
             "<b>.history</b> — история последних команд\n<b>.stt</b> — распознать голосовое сообщение\n<b>.qr текст</b> — QR-код\n"
             "<b>.weather город</b> — погода\n<b>.tts текст</b> — голосовое сообщение\n<b>.sticker</b> — случайный стикер\n"
-            "<b>.search [yandex|duck] запрос</b> — поиск\n<b>.afk [причина]</b> / .unafk — режим AFK\n<b>.help</b> — это сообщение"
+            "<b>.search [yandex|duck] запрос</b> — поиск\n<b>.recover [N]</b> — показать удалённые сообщения\n"
+            "<b>.afk [причина]</b> / .unafk — режим AFK\n<b>.help</b> — это сообщение"
         )
         await event.client.send_message(event.chat_id, text, parse_mode='html')
 
@@ -652,6 +662,20 @@ def register_handlers(client_instance):
         except Exception as e:
             text = f"❌ Ошибка: {e}"
         await event.client.send_message(event.chat_id, text)
+
+    # Команда .recover
+    @client_instance.on(events.NewMessage(outgoing=True, pattern=r'^\.recover(?:\s+(\d+))?'))
+    async def recover_cmd(event):
+        num = int(event.pattern_match.group(1)) if event.pattern_match.group(1) else 5
+        cid = event.chat_id
+        msgs = deleted_messages.get(cid, [])
+        if not msgs:
+            await event.reply("Нет удалённых сообщений.")
+            return
+        recent = msgs[-num:]
+        text = "📝 **Последние удалённые сообщения:**\n" + "\n".join(f"• {m}" for m in recent)
+        await event.client.send_message(event.chat_id, text)
+        await event.delete()
 
     @client_instance.on(events.NewMessage(incoming=True))
     async def filter_handler(event):
@@ -1071,6 +1095,62 @@ async def api_toggle_autoreply(request):
     await broadcast_state(); await backup_state()
     return web.Response(text="OK")
 
+# API для чатов
+async def api_chats(request):
+    user = await check_auth(request)
+    account_id = request.query.get("account", active_account)
+    client = client1
+    if account_id == "2" and client2: client = client2
+    elif account_id in extra_clients: client = extra_clients[account_id]["client"]
+    dialogs = []
+    try:
+        async for d in client.iter_dialogs(limit=50):
+            dialogs.append({
+                "id": d.id,
+                "name": d.name,
+                "unread": d.unread_count,
+                "last_message": d.message.text if d.message and d.message.text else ""
+            })
+    except Exception as e:
+        return web.json_response({"error": str(e)})
+    return web.json_response(dialogs)
+
+async def api_messages(request):
+    user = await check_auth(request)
+    account_id = request.query.get("account", active_account)
+    chat_id = int(request.query["chat_id"])
+    offset_id = int(request.query.get("offset_id", 0))
+    client = client1
+    if account_id == "2" and client2: client = client2
+    elif account_id in extra_clients: client = extra_clients[account_id]["client"]
+    messages = []
+    try:
+        async for msg in client.iter_messages(chat_id, limit=30, offset_id=offset_id):
+            messages.append({
+                "id": msg.id,
+                "date": msg.date.isoformat(),
+                "text": msg.text or "",
+                "out": msg.out
+            })
+    except Exception as e:
+        return web.json_response({"error": str(e)})
+    return web.json_response(messages)
+
+async def api_send_message(request):
+    user = await check_auth(request)
+    data = await request.post()
+    account_id = data.get("account", active_account)
+    chat_id = int(data.get("chat_id"))
+    text = data.get("text", "")
+    client = client1
+    if account_id == "2" and client2: client = client2
+    elif account_id in extra_clients: client = extra_clients[account_id]["client"]
+    try:
+        await client.send_message(chat_id, text, silent=True)
+    except Exception as e:
+        return web.json_response({"error": str(e)})
+    return web.json_response({"ok": True})
+
 app = web.Application()
 app.router.add_get("/", lambda r: web.Response(text="OK"))
 app.router.add_get("/login", login_page)
@@ -1106,6 +1186,9 @@ app.router.add_get("/api/mass_mute", api_mass_mute)
 app.router.add_get("/api/mass_unmute", api_mass_unmute)
 app.router.add_get("/api/unmute_all", api_unmute_all)
 app.router.add_get("/api/toggle_autoreply", api_toggle_autoreply)
+app.router.add_get("/api/chats", api_chats)
+app.router.add_get("/api/messages", api_messages)
+app.router.add_post("/api/send_message", api_send_message)
 
 async def start_web_server():
     runner = web.AppRunner(app); await runner.setup()
