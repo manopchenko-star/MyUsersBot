@@ -172,8 +172,8 @@
     </div>
     <div id="chats" class="tab-pane">
       <div style="margin-bottom:0.5rem;">
-        <select id="chatAccountSelect" onchange="loadChats()">
-        </select>
+        <select id="chatAccountSelect" onchange="loadChats()"></select>
+        <input type="text" id="chatSearch" placeholder="Поиск по имени или @username" oninput="loadChats()" style="width:200px; margin-left:0.5rem;">
       </div>
       <div class="chat-container">
         <div class="chat-list" id="dialogList"></div>
@@ -476,6 +476,12 @@
       var account = document.getElementById('chatAccountSelect').value;
       var resp = await fetch('/api/chats?account=' + account);
       var dialogs = await resp.json();
+      var query = document.getElementById('chatSearch').value.toLowerCase();
+      if (query) {
+        dialogs = dialogs.filter(function(d) {
+          return (d.name && d.name.toLowerCase().includes(query)) || (d.username && ('@' + d.username).toLowerCase().includes(query));
+        });
+      }
       dialogs.sort(function(a, b) {
         if (a.pinned && !b.pinned) return -1;
         if (!a.pinned && b.pinned) return 1;
@@ -486,7 +492,9 @@
       var html = '';
       dialogs.forEach(function(d) {
         var pinIcon = d.pinned ? '📌 ' : '';
-        html += '<div class="dialog-item" onclick="openChat(' + d.id + ', \'' + d.name.replace(/'/g, "\\'") + '\')">' + pinIcon + d.name + '</div>';
+        var displayName = d.name || d.id;
+        if (d.username) displayName += ' (@' + d.username + ')';
+        html += '<div class="dialog-item" onclick="openChat(' + d.id + ', \'' + displayName.replace(/'/g, "\\'") + '\')">' + pinIcon + displayName + '</div>';
       });
       document.getElementById('dialogList').innerHTML = html;
     }
@@ -522,6 +530,9 @@
         body: new URLSearchParams({account: account, chat_id: activeChatId, text: text})
       });
       document.getElementById('messageInput').value = '';
+      // Перезагружаем чаты, чтобы переместить активный чат наверх
+      loadChats();
+      // Обновляем сообщения
       openChat(activeChatId, '');
     }
 
