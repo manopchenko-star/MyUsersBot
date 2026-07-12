@@ -1,4 +1,4 @@
-import os, asyncio, json, time, base64, uuid, random, io, urllib.parse, hashlib, tempfile, signal, csv
+import os, asyncio, json, time, base64, uuid, random, io, urllib.parse, hashlib, tempfile, signal, csv, requests
 from pathlib import Path
 from datetime import datetime, timedelta
 from telethon import TelegramClient, events, Button
@@ -13,10 +13,10 @@ import speech_recognition as sr
 from pydub import AudioSegment
 from duckduckgo_search import DDGS
 from bs4 import BeautifulSoup
-import requests
 
 AudioSegment.converter = "/opt/render/project/src/ffmpeg"
 
+# ---------- Конфигурация ----------
 API_ID = int(os.environ["API_ID"])
 API_HASH = os.environ["API_HASH"]
 SESSION_STRING_1 = os.environ["SESSION_STRING"]
@@ -30,6 +30,11 @@ ACC2_DISPLAY_NAME = os.environ.get("ACC2_DISPLAY_NAME", "")
 OWNER_USERNAME = os.environ.get("OWNER_USERNAME", "Anopchenko2011")
 BACKUP_INTERVAL = int(os.environ.get("BACKUP_INTERVAL", "300"))
 BACKUP_KEY = os.environ.get("BACKUP_KEY", "")
+MISTRAL_API_KEY = os.environ.get("MISTRAL_API_KEY", "")
+AI_MODEL = os.environ.get("MISTRAL_MODEL", "mistral-tiny")
+AI_MAX_TOKENS = 500
+AI_TEMPERATURE = 0.7
+
 DATA_FILE = Path("userbot_data.json")
 LOG_FILE = Path("command_history.json")
 WARN_FILE = Path("warns.json")
@@ -88,6 +93,8 @@ active_account = "1"
 theme = "dark"
 deleted_messages = {}
 log_buffer = []
+ai_auto_reply_enabled = False
+ai_conversations = {}
 
 HTML_LOGIN = (TEMPLATES_DIR / "login.html").read_text(encoding="utf-8")
 HTML_DASHBOARD = (TEMPLATES_DIR / "dashboard.html").read_text(encoding="utf-8")
@@ -136,6 +143,7 @@ last_backup_msg_id = load_json(LAST_MSG_FILE, None)
 def encrypt_data(data_bytes): return fernet.encrypt(data_bytes)
 def decrypt_data(data_bytes): return fernet.decrypt(data_bytes)
 
+# ---------- Логирование ----------
 def add_log(msg_type, text):
     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     log_buffer.append({"time": ts, "type": msg_type, "text": text})
@@ -151,6 +159,7 @@ async def broadcast_log(msg_type, text, ts):
         try: await ws.send_str(msg)
         except: ws_clients.discard(ws)
 
+# ---------- Поиск ----------
 def yandex_search(query, num=5):
     try:
         url = f"https://yandex.ru/search/?text={urllib.parse.quote(query)}&lr=2"
@@ -167,6 +176,57 @@ def yandex_search(query, num=5):
     except Exception as e:
         return [f"Ошибка: {e}"]
 
+# ---------- Mistral AI ----------
+def mistral_ai(query, model=AI_MODEL, max_tokens=AI_MAX_TOKENS):
+    if not MISTRAL_API_KEY:
+        return "❌ Mistral API ключ не задан."
+    url = "https://api.mistral.ai/v1/chat/completions"
+    headers = {"Authorization": f"Bearer {MISTRAL_API_KEY}", "Content-Type": "application/json"}
+    payload = {
+        "model": model,
+        "messages": [{"role": "user", "content": query}],
+        "max_tokens": max_tokens,
+        "temperature": AI_TEMPERATURE
+    }
+    try:
+        resp = requests.post(url, json=payload, headers=headers, timeout=30)
+        if resp.status_code == 200:
+            return resp.json()["choices"][0]["message"]["content"]
+        else:
+            return f"❌ Ошибка AI: {resp.status_code}"
+    except Exception as e:
+        return f"⚠️ Сетевая ошибка: {e}"
+
+def mistral_ai_chat(chat_id, user_message):
+    if chat_id not in ai_conversations:
+        ai_conversations[chat_id] = []
+    history = ai_conversations[chat_id]
+    history.append({"role": "user", "content": user_message})
+    if len(history) > 10:
+        history = history[-10:]
+        ai_conversations[chat_id] = history
+
+    url = "https://api.mistral.ai/v1/chat/completions"
+    headers = {"Authorization": f"Bearer {MISTRAL_API_KEY}", "Content-Type": "application/json"}
+    payload = {
+        "model": AI_MODEL,
+        "messages": history,
+        "max_tokens": AI_MAX_TOKENS,
+        "temperature": AI_TEMPERATURE
+    }
+    try:
+        resp = requests.post(url, json=payload, headers=headers, timeout=30)
+        if resp.status_code == 200:
+            answer = resp.json()["choices"][0]["message"]["content"]
+            history.append({"role": "assistant", "content": answer})
+            ai_conversations[chat_id] = history
+            return answer
+        else:
+            return f"❌ Ошибка AI: {resp.status_code}"
+    except Exception as e:
+        return f"⚠️ Сетевая ошибка: {e}"
+
+# ---------- Бэкапы ----------
 async def cleanup_old_backups():
     global last_backup_msg_id
     if not client2 or not client2.is_connected(): return
@@ -297,7 +357,7 @@ async def broadcast_state():
     owner_id = None
     try: owner = await client1.get_entity(OWNER_USERNAME); owner_id = owner.id
     except: pass
-    data = {"muted_chats": list(muted_chats), "protected_users": list(protected_users), "history": command_history, "chat_names": await get_chat_names(), "user_names": await get_user_names(), "acc1_name": (await client1.get_me()).first_name or "Аккаунт 1", "acc2_name": acc2_name, "invites": invites, "admins": list(admins.keys()), "extra_clients": list(extra_clients.keys()), "owner_id": owner_id, "backup_history": backup_history[-20:], "backup_status": backup_status, "afk_users": afk_users, "notes": notes, "auto_reply_global": auto_reply_global, "active_account": active_account, "theme": theme, "filters": filters, "blacklist": blacklist, "schedule": schedule}
+    data = {"muted_chats": list(muted_chats), "protected_users": list(protected_users), "history": command_history, "chat_names": await get_chat_names(), "user_names": await get_user_names(), "acc1_name": (await client1.get_me()).first_name or "Аккаунт 1", "acc2_name": acc2_name, "invites": invites, "admins": list(admins.keys()), "extra_clients": list(extra_clients.keys()), "owner_id": owner_id, "backup_history": backup_history[-20:], "backup_status": backup_status, "afk_users": afk_users, "notes": notes, "auto_reply_global": auto_reply_global, "active_account": active_account, "theme": theme, "filters": filters, "blacklist": blacklist, "schedule": schedule, "ai_auto_reply_enabled": ai_auto_reply_enabled}
     msg = json.dumps(data, default=str, ensure_ascii=False)
     for ws in list(ws_clients):
         try: await ws.send_str(msg)
@@ -406,30 +466,6 @@ def register_handlers(client_instance):
             if event.chat_id in auto_reply_chats: del auto_reply_chats[event.chat_id]
             await event.delete()
             await event.client.send_message(event.chat_id, "❌ <b>Автоответчик выключен в этом чате.</b>", parse_mode='html')
-
-    @client_instance.on(events.NewMessage(incoming=True))
-    async def auto_reply_handler(event):
-        if event.out: return
-        chat_id = event.chat_id
-        if chat_id in muted_chats:
-            if event.sender_id not in protected_users:
-                try: await event.delete()
-                except: pass
-            return
-        chat_settings = auto_reply_chats.get(chat_id)
-        if chat_settings and chat_settings.get('enabled'):
-            reply_text = chat_settings.get('text')
-            if reply_text:
-                if last_replied.get(chat_id) == event.id: return
-                await asyncio.sleep(1); await event.client.send_message(chat_id, reply_text)
-                last_replied[chat_id] = event.id
-            return
-        if auto_reply_global['enabled']:
-            reply_text = auto_reply_global.get('text')
-            if reply_text:
-                if last_replied.get(chat_id) == event.id: return
-                await asyncio.sleep(1); await event.client.send_message(chat_id, reply_text)
-                last_replied[chat_id] = event.id
 
     @client_instance.on(events.NewMessage(outgoing=True, pattern=r'^\.spam\s+(\d+)\s+(.*)'))
     async def spam_cmd(event):
@@ -559,6 +595,7 @@ def register_handlers(client_instance):
             "<b>.history</b> — история последних команд\n<b>.stt</b> — распознать голосовое сообщение\n<b>.qr текст</b> — QR-код\n"
             "<b>.weather город</b> — погода\n<b>.tts текст</b> — голосовое сообщение\n<b>.sticker</b> — случайный стикер\n"
             "<b>.search [yandex|duck] запрос</b> — поиск\n<b>.recover [N]</b> — показать удалённые сообщения\n"
+            "<b>.ai вопрос</b> — задать вопрос ИИ\n<b>.ai on/off/status</b> — AI-автоответчик в ЛС\n"
             "<b>.afk [причина]</b> / .unafk — режим AFK\n<b>.help</b> — это сообщение"
         )
         await event.client.send_message(event.chat_id, text, parse_mode='html')
@@ -698,6 +735,87 @@ def register_handlers(client_instance):
         await event.client.send_message(event.chat_id, text)
         await event.delete()
 
+    # AI команды
+    @client_instance.on(events.NewMessage(outgoing=True, pattern=r'^\.ai\s+on$'))
+    async def ai_on_cmd(event):
+        global ai_auto_reply_enabled
+        ai_auto_reply_enabled = True
+        await event.delete()
+        await event.client.send_message(event.chat_id, "🤖 AI-автоответчик включён. Все входящие личные сообщения будут обрабатываться ИИ.")
+        add_log("AI", "AI-автоответчик включён")
+        await broadcast_state()
+
+    @client_instance.on(events.NewMessage(outgoing=True, pattern=r'^\.ai\s+off$'))
+    async def ai_off_cmd(event):
+        global ai_auto_reply_enabled
+        ai_auto_reply_enabled = False
+        await event.delete()
+        await event.client.send_message(event.chat_id, "🤖 AI-автоответчик выключен.")
+        add_log("AI", "AI-автоответчик выключен")
+        await broadcast_state()
+
+    @client_instance.on(events.NewMessage(outgoing=True, pattern=r'^\.ai\s+status$'))
+    async def ai_status_cmd(event):
+        await event.delete()
+        status = "включён" if ai_auto_reply_enabled else "выключен"
+        await event.client.send_message(event.chat_id, f"🤖 AI-автоответчик: {status}")
+
+    @client_instance.on(events.NewMessage(outgoing=True, pattern=r'^\.ai\s+(?!on|off|status)(.+)'))
+    async def ai_ask_cmd(event):
+        query = event.pattern_match.group(1).strip()
+        await event.delete()
+        if not MISTRAL_API_KEY:
+            await event.client.send_message(event.chat_id, "❌ Mistral API ключ не задан.")
+            return
+        response = mistral_ai(query)
+        await event.client.send_message(event.chat_id, response)
+        add_log("AI", f"Запрос: {query[:50]}...")
+
+    # Объединённый обработчик входящих сообщений
+    @client_instance.on(events.NewMessage(incoming=True))
+    async def auto_reply_handler(event):
+        if event.out: return
+        chat_id = event.chat_id
+
+        # AI-автоответчик (только ЛС)
+        if ai_auto_reply_enabled and event.is_private and MISTRAL_API_KEY:
+            if event.sender_id in protected_users:
+                return
+            me = await event.client.get_me()
+            if event.sender_id == me.id:
+                return
+            user_msg = event.text or ""
+            if not user_msg.strip():
+                return
+            response = mistral_ai_chat(chat_id, user_msg)
+            await asyncio.sleep(0.3)
+            await event.client.send_message(chat_id, response)
+            add_log("AI", f"Ответил в ЛС ({chat_id}): {user_msg[:30]}...")
+            return
+
+        # Обычный мут
+        if chat_id in muted_chats:
+            if event.sender_id not in protected_users:
+                try: await event.delete()
+                except: pass
+            return
+
+        # Обычный автоответчик (текстовый)
+        chat_settings = auto_reply_chats.get(chat_id)
+        if chat_settings and chat_settings.get('enabled'):
+            reply_text = chat_settings.get('text')
+            if reply_text:
+                if last_replied.get(chat_id) == event.id: return
+                await asyncio.sleep(1); await event.client.send_message(chat_id, reply_text)
+                last_replied[chat_id] = event.id
+            return
+        if auto_reply_global['enabled']:
+            reply_text = auto_reply_global.get('text')
+            if reply_text:
+                if last_replied.get(chat_id) == event.id: return
+                await asyncio.sleep(1); await event.client.send_message(chat_id, reply_text)
+                last_replied[chat_id] = event.id
+
     @client_instance.on(events.NewMessage(incoming=True))
     async def filter_handler(event):
         if event.out: return
@@ -785,7 +903,7 @@ if bot:
 
     @bot.on(events.NewMessage(pattern=r'^/status'))
     async def bot_status(event):
-        await event.reply(f"Активных мутов: {len(muted_chats)}\nAFK: {len(afk_users)}\nАвтоответчик: {'включён' if auto_reply_global['enabled'] else 'выключен'}")
+        await event.reply(f"Активных мутов: {len(muted_chats)}\nAFK: {len(afk_users)}\nАвтоответчик: {'включён' if auto_reply_global['enabled'] else 'выключен'}\nAI-автоответчик: {'включён' if ai_auto_reply_enabled else 'выключен'}")
 
 # ---------- Веб-обработчики ----------
 async def check_auth(request):
@@ -1011,7 +1129,7 @@ async def websocket_handler(request):
     if token and token != "password_ok" and auth_tokens.get(token) != True: return web.Response(status=401)
     if invite_token and invite_token not in invites: return web.Response(status=401)
     ws = web.WebSocketResponse(); await ws.prepare(request); ws_clients.add(ws)
-    initial = {"muted_chats": list(muted_chats), "protected_users": list(protected_users), "history": command_history, "chat_names": await get_chat_names(), "user_names": await get_user_names(), "acc1_name": (await client1.get_me()).first_name or "Аккаунт 1", "acc2_name": ACC2_DISPLAY_NAME if ACC2_DISPLAY_NAME else (await client2.get_me()).first_name if client2 else None, "admins": list(admins.keys()), "extra_clients": list(extra_clients.keys()), "backup_history": backup_history[-20:], "backup_status": backup_status, "afk_users": afk_users, "notes": notes, "auto_reply_global": auto_reply_global, "active_account": active_account, "theme": theme, "filters": filters, "blacklist": blacklist, "schedule": schedule}
+    initial = {"muted_chats": list(muted_chats), "protected_users": list(protected_users), "history": command_history, "chat_names": await get_chat_names(), "user_names": await get_user_names(), "acc1_name": (await client1.get_me()).first_name or "Аккаунт 1", "acc2_name": ACC2_DISPLAY_NAME if ACC2_DISPLAY_NAME else (await client2.get_me()).first_name if client2 else None, "admins": list(admins.keys()), "extra_clients": list(extra_clients.keys()), "backup_history": backup_history[-20:], "backup_status": backup_status, "afk_users": afk_users, "notes": notes, "auto_reply_global": auto_reply_global, "active_account": active_account, "theme": theme, "filters": filters, "blacklist": blacklist, "schedule": schedule, "ai_auto_reply_enabled": ai_auto_reply_enabled}
     await ws.send_str(json.dumps(initial, default=str, ensure_ascii=False))
     logs = log_buffer[-50:]
     await ws.send_str(json.dumps({"event": "logs_init", "logs": logs}, ensure_ascii=False))
