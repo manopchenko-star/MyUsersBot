@@ -169,8 +169,7 @@ def yandex_search(query, num=5):
             link = item.select_one('a.link')
             if link and link.get('href'): results.append(link['href'])
         return results
-    except Exception as e:
-        return [f"Ошибка: {e}"]
+    except Exception as e: return [f"Ошибка: {e}"]
 
 def mistral_ai(query, model=AI_MODEL, max_tokens=AI_MAX_TOKENS):
     if not MISTRAL_API_KEY: return "❌ Mistral API ключ не задан."
@@ -1025,8 +1024,9 @@ async def websocket_handler(request):
     initial = {"muted_chats": list(muted_chats), "protected_users": list(protected_users), "history": command_history, "chat_names": await get_chat_names(), "user_names": await get_user_names(), "acc1_name": (await client1.get_me()).first_name or "Аккаунт 1", "acc2_name": ACC2_DISPLAY_NAME if ACC2_DISPLAY_NAME else (await client2.get_me()).first_name if client2 else None, "admins": list(admins.keys()), "extra_clients": list(extra_clients.keys()), "backup_history": backup_history[-20:], "backup_status": backup_status, "afk_users": afk_users, "notes": notes, "auto_reply_global": auto_reply_global, "active_account": active_account, "theme": theme, "filters": filters, "blacklist": blacklist, "schedule": schedule, "ai_auto_reply_enabled": ai_auto_reply_enabled}
     await ws.send_str(json.dumps(initial, default=str, ensure_ascii=False))
     logs = log_buffer[-50:]; await ws.send_str(json.dumps({"event": "logs_init", "logs": logs}, ensure_ascii=False))
-    try: async for msg in ws: pass
-    finally: ws_clients.discard(ws)
+    async for msg in ws:
+        pass
+    ws_clients.discard(ws)
     return ws
 
 async def guest_ws_handler(request):
