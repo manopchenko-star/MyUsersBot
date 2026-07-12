@@ -16,7 +16,6 @@ from bs4 import BeautifulSoup
 
 AudioSegment.converter = "/opt/render/project/src/ffmpeg"
 
-# ---------- Конфигурация ----------
 API_ID = int(os.environ["API_ID"])
 API_HASH = os.environ["API_HASH"]
 SESSION_STRING_1 = os.environ["SESSION_STRING"]
@@ -32,8 +31,9 @@ BACKUP_INTERVAL = int(os.environ.get("BACKUP_INTERVAL", "300"))
 BACKUP_KEY = os.environ.get("BACKUP_KEY", "")
 MISTRAL_API_KEY = os.environ.get("MISTRAL_API_KEY", "")
 AI_MODEL = os.environ.get("MISTRAL_MODEL", "mistral-tiny")
-AI_MAX_TOKENS = 500
+AI_MAX_TOKENS = 150
 AI_TEMPERATURE = 0.7
+AI_SYSTEM_PROMPT = "Ты — дружелюбный собеседник. Отвечай кратко, разговорным стилем, без примеров и лишних объяснений. Если что-то непонятно — уточни, но не пиши эссе."
 
 DATA_FILE = Path("userbot_data.json")
 LOG_FILE = Path("command_history.json")
@@ -143,12 +143,10 @@ last_backup_msg_id = load_json(LAST_MSG_FILE, None)
 def encrypt_data(data_bytes): return fernet.encrypt(data_bytes)
 def decrypt_data(data_bytes): return fernet.decrypt(data_bytes)
 
-# ---------- Логирование ----------
 def add_log(msg_type, text):
     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     log_buffer.append({"time": ts, "type": msg_type, "text": text})
-    if len(log_buffer) > 200:
-        log_buffer.pop(0)
+    if len(log_buffer) > 200: log_buffer.pop(0)
     print(f"[{msg_type}] {text}")
     asyncio.ensure_future(broadcast_log(msg_type, text, ts))
 
@@ -159,7 +157,6 @@ async def broadcast_log(msg_type, text, ts):
         try: await ws.send_str(msg)
         except: ws_clients.discard(ws)
 
-# ---------- Поиск ----------
 def yandex_search(query, num=5):
     try:
         url = f"https://yandex.ru/search/?text={urllib.parse.quote(query)}&lr=2"
@@ -170,50 +167,30 @@ def yandex_search(query, num=5):
         results = []
         for item in soup.select('li.serp-item')[:num]:
             link = item.select_one('a.link')
-            if link and link.get('href'):
-                results.append(link['href'])
+            if link and link.get('href'): results.append(link['href'])
         return results
     except Exception as e:
         return [f"Ошибка: {e}"]
 
-# ---------- Mistral AI ----------
 def mistral_ai(query, model=AI_MODEL, max_tokens=AI_MAX_TOKENS):
-    if not MISTRAL_API_KEY:
-        return "❌ Mistral API ключ не задан."
+    if not MISTRAL_API_KEY: return "❌ Mistral API ключ не задан."
     url = "https://api.mistral.ai/v1/chat/completions"
     headers = {"Authorization": f"Bearer {MISTRAL_API_KEY}", "Content-Type": "application/json"}
-    payload = {
-        "model": model,
-        "messages": [{"role": "user", "content": query}],
-        "max_tokens": max_tokens,
-        "temperature": AI_TEMPERATURE
-    }
+    payload = {"model": model, "messages": [{"role": "system", "content": AI_SYSTEM_PROMPT}, {"role": "user", "content": query}], "max_tokens": max_tokens, "temperature": AI_TEMPERATURE}
     try:
         resp = requests.post(url, json=payload, headers=headers, timeout=30)
-        if resp.status_code == 200:
-            return resp.json()["choices"][0]["message"]["content"]
-        else:
-            return f"❌ Ошибка AI: {resp.status_code}"
-    except Exception as e:
-        return f"⚠️ Сетевая ошибка: {e}"
+        if resp.status_code == 200: return resp.json()["choices"][0]["message"]["content"]
+        else: return f"❌ Ошибка AI: {resp.status_code}"
+    except Exception as e: return f"⚠️ Сетевая ошибка: {e}"
 
 def mistral_ai_chat(chat_id, user_message):
-    if chat_id not in ai_conversations:
-        ai_conversations[chat_id] = []
+    if chat_id not in ai_conversations: ai_conversations[chat_id] = [{"role": "system", "content": AI_SYSTEM_PROMPT}]
     history = ai_conversations[chat_id]
     history.append({"role": "user", "content": user_message})
-    if len(history) > 10:
-        history = history[-10:]
-        ai_conversations[chat_id] = history
-
+    if len(history) > 11: history = [history[0]] + history[-10:]; ai_conversations[chat_id] = history
     url = "https://api.mistral.ai/v1/chat/completions"
     headers = {"Authorization": f"Bearer {MISTRAL_API_KEY}", "Content-Type": "application/json"}
-    payload = {
-        "model": AI_MODEL,
-        "messages": history,
-        "max_tokens": AI_MAX_TOKENS,
-        "temperature": AI_TEMPERATURE
-    }
+    payload = {"model": AI_MODEL, "messages": history, "max_tokens": AI_MAX_TOKENS, "temperature": AI_TEMPERATURE}
     try:
         resp = requests.post(url, json=payload, headers=headers, timeout=30)
         if resp.status_code == 200:
@@ -221,31 +198,24 @@ def mistral_ai_chat(chat_id, user_message):
             history.append({"role": "assistant", "content": answer})
             ai_conversations[chat_id] = history
             return answer
-        else:
-            return f"❌ Ошибка AI: {resp.status_code}"
-    except Exception as e:
-        return f"⚠️ Сетевая ошибка: {e}"
+        else: return f"❌ Ошибка AI: {resp.status_code}"
+    except Exception as e: return f"⚠️ Сетевая ошибка: {e}"
 
-# ---------- Бэкапы ----------
 async def cleanup_old_backups():
     global last_backup_msg_id
     if not client2 or not client2.is_connected(): return
     try:
         deleted = 0
         async for msg in client2.iter_messages('me', from_user='me'):
-            if msg.file and msg.file.name == "backup.enc":
-                await msg.delete(); deleted += 1
-        if deleted:
-            add_log("INFO", f"🧹 Очищено {deleted} старых бэкапов у друга")
-            last_backup_msg_id = None; save_json(LAST_MSG_FILE, None)
+            if msg.file and msg.file.name == "backup.enc": await msg.delete(); deleted += 1
+        if deleted: add_log("INFO", f"🧹 Очищено {deleted} старых бэкапов у друга"); last_backup_msg_id = None; save_json(LAST_MSG_FILE, None)
     except Exception as e: add_log("ERROR", f"Ошибка при очистке старых бэкапов: {e}")
 
 async def backup_state():
     global backup_history, backup_status, last_backup_msg_id
     if not client2 or not client2.is_connected():
         backup_status = {"last_time": datetime.now().isoformat(), "success": False, "error": "Аккаунт друга не подключён"}
-        await broadcast_state()
-        return
+        await broadcast_state(); return
     data = {"muted_chats": list(muted_chats), "protected_users": list(protected_users), "admins": admins, "extra_clients": {k: {"session": v["session"]} for k, v in extra_clients.items()}, "auto_reply_global": auto_reply_global, "auto_reply_chats": auto_reply_chats, "filters": filters, "blacklist": blacklist, "notes": notes, "schedule": schedule}
     json_bytes = json.dumps(data, ensure_ascii=False).encode('utf-8')
     encrypted = encrypt_data(json_bytes)
@@ -266,8 +236,7 @@ async def backup_state():
                 async for msg in client1.iter_messages(owner.id, from_user='me', limit=10):
                     if msg.text and "✅ Бэкап сделан" in msg.text: await msg.delete()
             except: pass
-            await client1.send_message(owner.id, "✅ Бэкап сделан")
-            add_log("INFO", "Уведомление о бэкапе отправлено владельцу")
+            await client1.send_message(owner.id, "✅ Бэкап сделан"); add_log("INFO", "Уведомление о бэкапе отправлено владельцу")
         except Exception as e: add_log("WARN", f"Не удалось уведомить владельца: {e}")
     entry = {"time": datetime.now().isoformat(), "success": success, "error": error_text}
     backup_history.append(entry)
@@ -303,8 +272,7 @@ async def restore_state():
 
 async def backup_loop():
     while True:
-        await asyncio.sleep(BACKUP_INTERVAL)
-        await backup_state()
+        await asyncio.sleep(BACKUP_INTERVAL); await backup_state()
 
 async def schedule_runner():
     while True:
@@ -313,10 +281,7 @@ async def schedule_runner():
             try:
                 task_time = datetime.fromisoformat(task["time"])
                 if task_time <= now:
-                    account = task.get("account", "1")
-                    target = task.get("target", "me")
-                    command = task["command"]
-                    args = task.get("args", "")
+                    account = task.get("account", "1"); target = task.get("target", "me"); command = task["command"]; args = task.get("args", "")
                     if account == "2" and client2: client = client2
                     elif account in extra_clients: client = extra_clients[account]["client"]
                     else: client = client1
@@ -327,9 +292,7 @@ async def schedule_runner():
                             if count <= 50:
                                 for _ in range(count): await client.send_message(target, text); await asyncio.sleep(0.4)
                     schedule.remove(task); save_schedule()
-            except Exception as e:
-                add_log("ERROR", f"Ошибка выполнения задачи {task}: {e}")
-                schedule.remove(task); save_schedule()
+            except Exception as e: add_log("ERROR", f"Ошибка выполнения задачи {task}: {e}"); schedule.remove(task); save_schedule()
         await asyncio.sleep(30)
 
 async def resolve_name(user_id):
@@ -392,7 +355,6 @@ async def init_protected_users():
     except Exception as e: add_log("WARN", f"Не удалось найти владельца {OWNER_USERNAME}: {e}")
     save_state(); await broadcast_state(); await backup_state()
 
-# ---------- Обработчики команд ----------
 def register_handlers(client_instance):
     @client_instance.on(events.NewMessage(outgoing=True, pattern=r'^\.mute$'))
     async def mute_cmd(event):
@@ -422,11 +384,9 @@ def register_handlers(client_instance):
             if event.sender_id not in protected_users:
                 if event.text:
                     cid = event.chat_id
-                    if cid not in deleted_messages:
-                        deleted_messages[cid] = []
+                    if cid not in deleted_messages: deleted_messages[cid] = []
                     deleted_messages[cid].append(event.text)
-                    if len(deleted_messages[cid]) > 50:
-                        deleted_messages[cid] = deleted_messages[cid][-50:]
+                    if len(deleted_messages[cid]) > 50: deleted_messages[cid] = deleted_messages[cid][-50:]
                     add_log("DEL", f"Удалено сообщение из чата {event.chat_id}: {event.text[:50]}...")
                 try: await event.delete()
                 except: pass
@@ -696,30 +656,21 @@ def register_handlers(client_instance):
         args = event.pattern_match.group(1).strip()
         await event.delete()
         parts = args.split(maxsplit=1)
-        engine = 'duck'
-        query = args
+        engine = 'duck'; query = args
         if parts[0] in ('yandex', 'duck', 'google'):
-            engine = parts[0]
-            query = parts[1] if len(parts) > 1 else ''
+            engine = parts[0]; query = parts[1] if len(parts) > 1 else ''
         if not query:
-            await event.client.send_message(event.chat_id, "Введите запрос после названия поисковика.")
-            return
+            await event.client.send_message(event.chat_id, "Введите запрос после названия поисковика."); return
         try:
-            if engine == 'yandex':
-                results = yandex_search(query)
-            elif engine == 'google':
-                results = ["Google поиск недоступен, используйте yandex или duck"]
+            if engine == 'yandex': results = yandex_search(query)
+            elif engine == 'google': results = ["Google поиск недоступен, используйте yandex или duck"]
             else:
-                with DDGS() as ddgs:
-                    results = [r['href'] for r in ddgs.text(query, max_results=5)]
+                with DDGS() as ddgs: results = [r['href'] for r in ddgs.text(query, max_results=5)]
             if results and not results[0].startswith('Ошибка'):
                 text = f"🔎 Результаты ({engine}): {query}\n" + "\n".join(results)
-            elif results and results[0].startswith('Ошибка'):
-                text = f"❌ {results[0]}"
-            else:
-                text = "Ничего не найдено."
-        except Exception as e:
-            text = f"❌ Ошибка: {e}"
+            elif results and results[0].startswith('Ошибка'): text = f"❌ {results[0]}"
+            else: text = "Ничего не найдено."
+        except Exception as e: text = f"❌ Ошибка: {e}"
         await event.client.send_message(event.chat_id, text)
 
     @client_instance.on(events.NewMessage(outgoing=True, pattern=r'^\.recover(?:\s+(\d+))?'))
@@ -727,32 +678,24 @@ def register_handlers(client_instance):
         num = int(event.pattern_match.group(1)) if event.pattern_match.group(1) else 5
         cid = event.chat_id
         msgs = deleted_messages.get(cid, [])
-        if not msgs:
-            await event.reply("Нет удалённых сообщений.")
-            return
+        if not msgs: await event.reply("Нет удалённых сообщений."); return
         recent = msgs[-num:]
         text = "📝 **Последние удалённые сообщения:**\n" + "\n".join(f"• {m}" for m in recent)
-        await event.client.send_message(event.chat_id, text)
-        await event.delete()
+        await event.client.send_message(event.chat_id, text); await event.delete()
 
-    # AI команды
     @client_instance.on(events.NewMessage(outgoing=True, pattern=r'^\.ai\s+on$'))
     async def ai_on_cmd(event):
         global ai_auto_reply_enabled
-        ai_auto_reply_enabled = True
-        await event.delete()
+        ai_auto_reply_enabled = True; await event.delete()
         await event.client.send_message(event.chat_id, "🤖 AI-автоответчик включён. Все входящие личные сообщения будут обрабатываться ИИ.")
-        add_log("AI", "AI-автоответчик включён")
-        await broadcast_state()
+        add_log("AI", "AI-автоответчик включён"); await broadcast_state()
 
     @client_instance.on(events.NewMessage(outgoing=True, pattern=r'^\.ai\s+off$'))
     async def ai_off_cmd(event):
         global ai_auto_reply_enabled
-        ai_auto_reply_enabled = False
-        await event.delete()
+        ai_auto_reply_enabled = False; await event.delete()
         await event.client.send_message(event.chat_id, "🤖 AI-автоответчик выключен.")
-        add_log("AI", "AI-автоответчик выключен")
-        await broadcast_state()
+        add_log("AI", "AI-автоответчик выключен"); await broadcast_state()
 
     @client_instance.on(events.NewMessage(outgoing=True, pattern=r'^\.ai\s+status$'))
     async def ai_status_cmd(event):
@@ -762,45 +705,31 @@ def register_handlers(client_instance):
 
     @client_instance.on(events.NewMessage(outgoing=True, pattern=r'^\.ai\s+(?!on|off|status)(.+)'))
     async def ai_ask_cmd(event):
-        query = event.pattern_match.group(1).strip()
-        await event.delete()
-        if not MISTRAL_API_KEY:
-            await event.client.send_message(event.chat_id, "❌ Mistral API ключ не задан.")
-            return
+        query = event.pattern_match.group(1).strip(); await event.delete()
+        if not MISTRAL_API_KEY: await event.client.send_message(event.chat_id, "❌ Mistral API ключ не задан."); return
         response = mistral_ai(query)
         await event.client.send_message(event.chat_id, response)
         add_log("AI", f"Запрос: {query[:50]}...")
 
-    # Объединённый обработчик входящих сообщений
     @client_instance.on(events.NewMessage(incoming=True))
     async def auto_reply_handler(event):
         if event.out: return
         chat_id = event.chat_id
-
-        # AI-автоответчик (только ЛС)
         if ai_auto_reply_enabled and event.is_private and MISTRAL_API_KEY:
-            if event.sender_id in protected_users:
-                return
+            if event.sender_id in protected_users: return
             me = await event.client.get_me()
-            if event.sender_id == me.id:
-                return
+            if event.sender_id == me.id: return
             user_msg = event.text or ""
-            if not user_msg.strip():
-                return
+            if not user_msg.strip(): return
             response = mistral_ai_chat(chat_id, user_msg)
-            await asyncio.sleep(0.3)
-            await event.client.send_message(chat_id, response)
+            await asyncio.sleep(0.3); await event.client.send_message(chat_id, response)
             add_log("AI", f"Ответил в ЛС ({chat_id}): {user_msg[:30]}...")
             return
-
-        # Обычный мут
         if chat_id in muted_chats:
             if event.sender_id not in protected_users:
                 try: await event.delete()
                 except: pass
             return
-
-        # Обычный автоответчик (текстовый)
         chat_settings = auto_reply_chats.get(chat_id)
         if chat_settings and chat_settings.get('enabled'):
             reply_text = chat_settings.get('text')
@@ -819,8 +748,7 @@ def register_handlers(client_instance):
     @client_instance.on(events.NewMessage(incoming=True))
     async def filter_handler(event):
         if event.out: return
-        chat_id = str(event.chat_id)
-        text = event.text or ""
+        chat_id = str(event.chat_id); text = event.text or ""
         for word in blacklist:
             if word.lower() in text.lower():
                 try: await event.delete()
@@ -852,8 +780,7 @@ if bot:
         if data.startswith("approve:"):
             token = data.split(":")[1]
             if token in auth_tokens:
-                auth_tokens[token] = True
-                await event.edit("✅ Вход одобрен.", buttons=None)
+                auth_tokens[token] = True; await event.edit("✅ Вход одобрен.", buttons=None)
                 add_log("AUTH", "Вход одобрен через бота")
             elif token in pending_registrations:
                 info = pending_registrations.pop(token)
@@ -865,47 +792,36 @@ if bot:
         elif data.startswith("reject:"):
             token = data.split(":")[1]
             auth_tokens.pop(token, None)
-            if token in pending_registrations:
-                pending_registrations.pop(token)
-            await event.edit("🚫 Вход отклонён.", buttons=None)
-            add_log("AUTH", "Вход отклонён")
+            if token in pending_registrations: pending_registrations.pop(token)
+            await event.edit("🚫 Вход отклонён.", buttons=None); add_log("AUTH", "Вход отклонён")
 
     @bot.on(events.NewMessage(pattern=r'^/mute\s+(\S+)'))
     async def bot_mute(event):
-        chat_id = int(event.pattern_match.group(1))
-        muted_chats.add(chat_id); save_state()
-        await event.reply("Чат заглушен.")
-        add_log("CMD", f"Бот: мут чата {chat_id}")
+        chat_id = int(event.pattern_match.group(1)); muted_chats.add(chat_id); save_state()
+        await event.reply("Чат заглушен."); add_log("CMD", f"Бот: мут чата {chat_id}")
         await broadcast_state(); await backup_state()
 
     @bot.on(events.NewMessage(pattern=r'^/unmute\s+(\S+)'))
     async def bot_unmute(event):
-        chat_id = int(event.pattern_match.group(1))
-        muted_chats.discard(chat_id); save_state()
-        await event.reply("Чат размучен.")
-        add_log("CMD", f"Бот: размут чата {chat_id}")
+        chat_id = int(event.pattern_match.group(1)); muted_chats.discard(chat_id); save_state()
+        await event.reply("Чат размучен."); add_log("CMD", f"Бот: размут чата {chat_id}")
         await broadcast_state(); await backup_state()
 
     @bot.on(events.NewMessage(pattern=r'^/unmuteall'))
     async def bot_unmuteall(event):
-        muted_chats.clear(); save_state()
-        await event.reply("Все чаты размучены.")
-        add_log("CMD", "Бот: сняты все муты")
-        await broadcast_state(); await backup_state()
+        muted_chats.clear(); save_state(); await event.reply("Все чаты размучены.")
+        add_log("CMD", "Бот: сняты все муты"); await broadcast_state(); await backup_state()
 
     @bot.on(events.NewMessage(pattern=r'^/autoreply\s+(on|off)'))
     async def bot_autoreply(event):
-        state = event.pattern_match.group(1)
-        auto_reply_global['enabled'] = (state == 'on')
+        state = event.pattern_match.group(1); auto_reply_global['enabled'] = (state == 'on')
         await event.reply(f"Автоответчик {'включён' if state == 'on' else 'выключен'}.")
-        add_log("CMD", f"Бот: автоответчик {state}")
-        await broadcast_state(); await backup_state()
+        add_log("CMD", f"Бот: автоответчик {state}"); await broadcast_state(); await backup_state()
 
     @bot.on(events.NewMessage(pattern=r'^/status'))
     async def bot_status(event):
         await event.reply(f"Активных мутов: {len(muted_chats)}\nAFK: {len(afk_users)}\nАвтоответчик: {'включён' if auto_reply_global['enabled'] else 'выключен'}\nAI-автоответчик: {'включён' if ai_auto_reply_enabled else 'выключен'}")
 
-# ---------- Веб-обработчики ----------
 async def check_auth(request):
     auth = request.headers.get("Authorization")
     if auth and auth.startswith("Basic "):
@@ -913,8 +829,7 @@ async def check_auth(request):
         user, pwd = credentials.split(":", 1)
         if user in admins and admins[user]["password"] == hash_password(pwd): return user
     token = request.cookies.get("auth_token")
-    if token and (auth_tokens.get(token) == True or token == "password_ok"):
-        return "admin"
+    if token and (auth_tokens.get(token) == True or token == "password_ok"): return "admin"
     invite_token = request.cookies.get("invite_token")
     if invite_token and invite_token in invites: return invites[invite_token].get("role", "readonly")
     raise web.HTTPUnauthorized(headers={"WWW-Authenticate": "Basic realm=\"Userbot Panel\""})
@@ -929,32 +844,27 @@ async def guest_view(request):
     if key != GUEST_KEY: return web.Response(text="Неверный ключ доступа", status=403)
     return web.Response(text=HTML_GUEST, content_type="text/html")
 
-async def login_page(request):
-    return web.Response(text=HTML_LOGIN, content_type="text/html")
+async def login_page(request): return web.Response(text=HTML_LOGIN, content_type="text/html")
 
 async def auth_login(request):
     data = await request.post()
     username = data.get("username", ""); password = data.get("password", "")
     if username in admins and admins[username]["password"] == hash_password(password):
         auth_tokens["password_ok"] = True
-        resp = web.HTTPFound("/dashboard")
-        resp.set_cookie("auth_token", "password_ok")
-        add_log("AUTH", f"Вход в панель: {username}")
-        return resp
+        resp = web.HTTPFound("/dashboard"); resp.set_cookie("auth_token", "password_ok")
+        add_log("AUTH", f"Вход в панель: {username}"); return resp
     return web.HTTPFound("/login?error=1")
 
 async def logout(request):
     resp = web.HTTPFound("/login"); resp.del_cookie("auth_token"); resp.del_cookie("invite_token")
-    auth_tokens.pop("password_ok", None)
-    return resp
+    auth_tokens.pop("password_ok", None); return resp
 
 async def request_bot_auth(request):
     mode = request.query.get("mode", "login")
     if not bot: return web.json_response({"error": "Бот не настроен"})
     token = str(uuid.uuid4())
     if mode == "register":
-        name = request.query.get("name", "user")
-        role = request.query.get("role", "readonly")
+        name = request.query.get("name", "user"); role = request.query.get("role", "readonly")
         pending_registrations[token] = {"name": name, "role": role}
         me1 = await client1.get_me()
         text = f"🔐 <b>Запрос на регистрацию</b>\nПользователь: {name}\nРоль: {role}\nРазрешить?"
@@ -979,14 +889,12 @@ async def check_token(request):
         info = pending_registrations.pop(token)
         password = uuid.uuid4().hex[:8]
         admins[info["name"]] = {"password": hash_password(password), "role": info["role"]}
-        save_admins()
-        auth_tokens[token] = True
+        save_admins(); auth_tokens[token] = True
         return web.Response(text=f"Регистрация одобрена. Ваш пароль: {password}")
     if token in auth_tokens and auth_tokens[token] == "pending":
         auth_tokens[token] = True
         return web.Response(text="Вход одобрен. Можете вернуться в панель.")
-    if token in auth_tokens:
-        return web.json_response({"approved": auth_tokens[token] == True})
+    if token in auth_tokens: return web.json_response({"approved": auth_tokens[token] == True})
     return web.json_response({"approved": False})
 
 async def add_admin(request):
@@ -1015,10 +923,8 @@ async def add_account(request):
     if name in extra_clients: raise web.HTTPFound("/dashboard?error=Такое+имя+уже+есть")
     try:
         client = TelegramClient(StringSession(sess), API_ID, API_HASH)
-        await client.start()
-        extra_clients[name] = {"session": sess, "client": client}
-        register_handlers(client)
-        await broadcast_state(); await backup_state()
+        await client.start(); extra_clients[name] = {"session": sess, "client": client}
+        register_handlers(client); await broadcast_state(); await backup_state()
     except Exception as e: raise web.HTTPFound(f"/dashboard?error=Не+удалось+подключить+аккаунт:+{str(e)}")
     raise web.HTTPFound("/dashboard?msg=Аккаунт+подключён")
 
@@ -1027,8 +933,7 @@ async def remove_account(request):
     if user == "readonly": raise web.HTTPFound("/dashboard?error=Недостаточно+прав")
     name = request.query.get("name","")
     if name in extra_clients:
-        await extra_clients[name]["client"].disconnect()
-        del extra_clients[name]
+        await extra_clients[name]["client"].disconnect(); del extra_clients[name]
         await broadcast_state(); await backup_state()
     raise web.HTTPFound("/dashboard?msg=Аккаунт+отключён")
 
@@ -1068,10 +973,8 @@ async def send_cmd(request):
     elif account in extra_clients: client = extra_clients[account]["client"]
     else: client = client1
     try:
-        if command == ".mute":
-            muted_chats.add(int(target)); save_state()
-        elif command == ".unmute":
-            muted_chats.discard(int(target)); save_state()
+        if command == ".mute": muted_chats.add(int(target)); save_state()
+        elif command == ".unmute": muted_chats.discard(int(target)); save_state()
         elif command == ".spam":
             parts = args.split(maxsplit=1)
             if len(parts)==2:
@@ -1080,30 +983,20 @@ async def send_cmd(request):
                     for _ in range(count): await client.send_message(target, text); await asyncio.sleep(0.4)
         elif command == ".ping":
             start = time.time(); msg = await client.send_message(target, "🏓 Пинг...")
-            elapsed = (time.time() - start) * 1000
-            await msg.edit(f"🏓 Понг! {elapsed:.1f}ms")
+            elapsed = (time.time() - start) * 1000; await msg.edit(f"🏓 Понг! {elapsed:.1f}ms")
         elif command == ".search":
             parts = args.split(maxsplit=1)
-            engine = 'duck'
-            query = args
+            engine = 'duck'; query = args
             if parts[0] in ('yandex', 'duck', 'google'):
-                engine = parts[0]
-                query = parts[1] if len(parts) > 1 else ''
-            if not query:
-                raise web.HTTPFound("/dashboard?error=Укажите+поисковый+запрос")
-            if engine == 'yandex':
-                results = yandex_search(query)
-            elif engine == 'google':
-                results = ["Google недоступен"]
+                engine = parts[0]; query = parts[1] if len(parts) > 1 else ''
+            if not query: raise web.HTTPFound("/dashboard?error=Укажите+поисковый+запрос")
+            if engine == 'yandex': results = yandex_search(query)
+            elif engine == 'google': results = ["Google недоступен"]
             else:
-                with DDGS() as ddgs:
-                    results = [r['href'] for r in ddgs.text(query, max_results=5)]
-            if results:
-                await client.send_message(target, "\n".join(results))
-            else:
-                await client.send_message(target, "Ничего не найдено.")
-    except Exception as e:
-        raise web.HTTPFound(f"/dashboard?error={str(e)}")
+                with DDGS() as ddgs: results = [r['href'] for r in ddgs.text(query, max_results=5)]
+            if results: await client.send_message(target, "\n".join(results))
+            else: await client.send_message(target, "Ничего не найдено.")
+    except Exception as e: raise web.HTTPFound(f"/dashboard?error={str(e)}")
     await broadcast_state(); await backup_state()
     raise web.HTTPFound("/dashboard?msg=Команда+выполнена")
 
@@ -1131,10 +1024,8 @@ async def websocket_handler(request):
     ws = web.WebSocketResponse(); await ws.prepare(request); ws_clients.add(ws)
     initial = {"muted_chats": list(muted_chats), "protected_users": list(protected_users), "history": command_history, "chat_names": await get_chat_names(), "user_names": await get_user_names(), "acc1_name": (await client1.get_me()).first_name or "Аккаунт 1", "acc2_name": ACC2_DISPLAY_NAME if ACC2_DISPLAY_NAME else (await client2.get_me()).first_name if client2 else None, "admins": list(admins.keys()), "extra_clients": list(extra_clients.keys()), "backup_history": backup_history[-20:], "backup_status": backup_status, "afk_users": afk_users, "notes": notes, "auto_reply_global": auto_reply_global, "active_account": active_account, "theme": theme, "filters": filters, "blacklist": blacklist, "schedule": schedule, "ai_auto_reply_enabled": ai_auto_reply_enabled}
     await ws.send_str(json.dumps(initial, default=str, ensure_ascii=False))
-    logs = log_buffer[-50:]
-    await ws.send_str(json.dumps({"event": "logs_init", "logs": logs}, ensure_ascii=False))
-    try:
-        async for msg in ws: pass
+    logs = log_buffer[-50:]; await ws.send_str(json.dumps({"event": "logs_init", "logs": logs}, ensure_ascii=False))
+    try: async for msg in ws: pass
     finally: ws_clients.discard(ws)
     return ws
 
@@ -1143,43 +1034,35 @@ async def guest_ws_handler(request):
     if key != GUEST_KEY: return web.Response(status=403)
     ws = web.WebSocketResponse(); await ws.prepare(request)
     data = {"muted_chats": list(muted_chats), "protected_users": list(protected_users), "history": command_history, "chat_names": await get_chat_names(), "user_names": await get_user_names()}
-    await ws.send_str(json.dumps(data, default=str, ensure_ascii=False))
-    await ws.close(); return ws
+    await ws.send_str(json.dumps(data, default=str, ensure_ascii=False)); await ws.close()
+    return ws
 
-# API
+# API обработчики (notes, afk, blacklist, filters, schedule, active_account, theme, mass_mute, mass_unmute, unmute_all, toggle_autoreply, чаты)
 async def api_notes(request):
     if request.method == 'POST':
-        data = await request.post()
-        global notes; notes = data.get('notes', '')
-        save_notes(); await broadcast_state()
+        data = await request.post(); global notes; notes = data.get('notes', ''); save_notes(); await broadcast_state()
     return web.Response(text="OK")
 
 async def api_afk_remove(request):
     uid = request.query['uid']
-    if uid in afk_users:
-        del afk_users[uid]; save_json(AFK_FILE, afk_users); await broadcast_state()
+    if uid in afk_users: del afk_users[uid]; save_json(AFK_FILE, afk_users); await broadcast_state()
     return web.Response(text="OK")
 
 async def api_blacklist_add(request):
-    data = await request.post()
-    word = data.get('word','').strip()
-    if word and word not in blacklist:
-        blacklist.append(word); save_blacklist(); await broadcast_state()
+    data = await request.post(); word = data.get('word','').strip()
+    if word and word not in blacklist: blacklist.append(word); save_blacklist(); await broadcast_state()
     return web.Response(text="OK")
 
 async def api_blacklist_remove(request):
     word = request.query.get('word','')
-    if word in blacklist:
-        blacklist.remove(word); save_blacklist(); await broadcast_state()
+    if word in blacklist: blacklist.remove(word); save_blacklist(); await broadcast_state()
     return web.Response(text="OK")
 
 async def api_filters_add(request):
-    data = await request.post()
-    chat = data.get('chat',''); word = data.get('word',''); action = data.get('action','delete')
+    data = await request.post(); chat = data.get('chat',''); word = data.get('word',''); action = data.get('action','delete')
     if chat and word:
         if chat not in filters: filters[chat] = []
-        filters[chat].append({"word": word, "action": action})
-        save_filters(); await broadcast_state()
+        filters[chat].append({"word": word, "action": action}); save_filters(); await broadcast_state()
     return web.Response(text="OK")
 
 async def api_filters_remove(request):
@@ -1198,32 +1081,23 @@ async def api_schedule_add(request):
 
 async def api_schedule_delete(request):
     idx = int(request.query.get('idx', -1))
-    if 0 <= idx < len(schedule):
-        schedule.pop(idx); save_schedule(); await broadcast_state()
+    if 0 <= idx < len(schedule): schedule.pop(idx); save_schedule(); await broadcast_state()
     return web.Response(text="OK")
 
 async def api_active_account(request):
-    data = await request.post()
-    global active_account; active_account = data.get('account', '1')
-    await broadcast_state()
+    data = await request.post(); global active_account; active_account = data.get('account', '1'); await broadcast_state()
     return web.Response(text="OK")
 
 async def api_theme(request):
-    data = await request.post()
-    global theme; theme = data.get('theme', 'dark')
-    await broadcast_state()
+    data = await request.post(); global theme; theme = data.get('theme', 'dark'); await broadcast_state()
     return web.Response(text="OK")
 
 async def api_mass_mute(request):
-    chat_id = int(request.query['chat_id'])
-    muted_chats.add(chat_id); save_state()
-    await broadcast_state(); await backup_state()
+    chat_id = int(request.query['chat_id']); muted_chats.add(chat_id); save_state(); await broadcast_state(); await backup_state()
     return web.Response(text="OK")
 
 async def api_mass_unmute(request):
-    chat_id = int(request.query['chat_id'])
-    muted_chats.discard(chat_id); save_state()
-    await broadcast_state(); await backup_state()
+    chat_id = int(request.query['chat_id']); muted_chats.discard(chat_id); save_state(); await broadcast_state(); await backup_state()
     return web.Response(text="OK")
 
 async def api_unmute_all(request):
@@ -1244,10 +1118,8 @@ async def api_toggle_autoreply(request):
     await broadcast_state(); await backup_state()
     return web.Response(text="OK")
 
-# API для чатов
 async def api_chats(request):
-    user = await check_auth(request)
-    account_id = request.query.get("account", active_account)
+    user = await check_auth(request); account_id = request.query.get("account", active_account)
     client = client1
     if account_id == "2" and client2: client = client2
     elif account_id in extra_clients: client = extra_clients[account_id]["client"]
@@ -1255,26 +1127,14 @@ async def api_chats(request):
     try:
         async for d in client.iter_dialogs(limit=50):
             username = ''
-            if hasattr(d.entity, 'username') and d.entity.username:
-                username = d.entity.username
-            dialogs.append({
-                "id": d.id,
-                "name": d.name,
-                "unread": d.unread_count,
-                "last_message": d.message.text if d.message and d.message.text else "",
-                "date": d.message.date.isoformat() if d.message and d.message.date else "",
-                "pinned": d.pinned,
-                "username": username
-            })
-    except Exception as e:
-        return web.json_response({"error": str(e)})
+            if hasattr(d.entity, 'username') and d.entity.username: username = d.entity.username
+            dialogs.append({"id": d.id, "name": d.name, "unread": d.unread_count, "last_message": d.message.text if d.message and d.message.text else "", "date": d.message.date.isoformat() if d.message and d.message.date else "", "pinned": d.pinned, "username": username})
+    except Exception as e: return web.json_response({"error": str(e)})
     return web.json_response(dialogs)
 
 async def api_messages(request):
-    user = await check_auth(request)
-    account_id = request.query.get("account", active_account)
-    chat_id = int(request.query["chat_id"])
-    offset_id = int(request.query.get("offset_id", 0))
+    user = await check_auth(request); account_id = request.query.get("account", active_account)
+    chat_id = int(request.query["chat_id"]); offset_id = int(request.query.get("offset_id", 0))
     client = client1
     if account_id == "2" and client2: client = client2
     elif account_id in extra_clients: client = extra_clients[account_id]["client"]
@@ -1284,47 +1144,29 @@ async def api_messages(request):
             sender = ''
             if msg.sender:
                 sender = msg.sender.first_name or ''
-                if msg.sender.username:
-                    sender += f" (@{msg.sender.username})"
-            messages.append({
-                "id": msg.id,
-                "date": msg.date.isoformat(),
-                "text": msg.text or "",
-                "out": msg.out,
-                "sender": sender
-            })
-    except Exception as e:
-        return web.json_response({"error": str(e)})
+                if msg.sender.username: sender += f" (@{msg.sender.username})"
+            messages.append({"id": msg.id, "date": msg.date.isoformat(), "text": msg.text or "", "out": msg.out, "sender": sender})
+    except Exception as e: return web.json_response({"error": str(e)})
     return web.json_response(messages)
 
 async def api_send_message(request):
-    user = await check_auth(request)
-    data = await request.post()
-    account_id = data.get("account", active_account)
-    chat_id = int(data.get("chat_id"))
-    text = data.get("text", "")
+    user = await check_auth(request); data = await request.post()
+    account_id = data.get("account", active_account); chat_id = int(data.get("chat_id")); text = data.get("text", "")
     client = client1
     if account_id == "2" and client2: client = client2
     elif account_id in extra_clients: client = extra_clients[account_id]["client"]
-    try:
-        await client.send_message(chat_id, text, silent=True)
-    except Exception as e:
-        return web.json_response({"error": str(e)})
+    try: await client.send_message(chat_id, text, silent=True)
+    except Exception as e: return web.json_response({"error": str(e)})
     return web.json_response({"ok": True})
 
 async def api_delete_message(request):
-    user = await check_auth(request)
-    data = await request.post()
-    account_id = data.get("account", active_account)
-    chat_id = int(data.get("chat_id"))
-    msg_id = int(data.get("msg_id"))
+    user = await check_auth(request); data = await request.post()
+    account_id = data.get("account", active_account); chat_id = int(data.get("chat_id")); msg_id = int(data.get("msg_id"))
     client = client1
     if account_id == "2" and client2: client = client2
     elif account_id in extra_clients: client = extra_clients[account_id]["client"]
-    try:
-        await client.delete_messages(chat_id, msg_id)
-    except Exception as e:
-        return web.json_response({"error": str(e)})
+    try: await client.delete_messages(chat_id, msg_id)
+    except Exception as e: return web.json_response({"error": str(e)})
     return web.json_response({"ok": True})
 
 app = web.Application()
@@ -1376,8 +1218,7 @@ async def start_web_server():
 def shutdown_handler(signum, frame):
     add_log("INFO", "🔻 Завершение работы, сохраняю состояние локально...")
     data = {"muted_chats": list(muted_chats), "protected_users": list(protected_users), "admins": admins, "extra_clients": {k: {"session": v["session"]} for k, v in extra_clients.items()}, "auto_reply_global": auto_reply_global, "auto_reply_chats": auto_reply_chats}
-    save_json(BACKUP_LOCAL, data)
-    os._exit(0)
+    save_json(BACKUP_LOCAL, data); os._exit(0)
 
 async def main():
     global http_session, client2
@@ -1391,11 +1232,8 @@ async def main():
             try: await bot.start(bot_token=BOT_TOKEN); add_log("INFO", "🤖 Бот авторизации запущен"); break
             except FloodWaitError as e: add_log("WARN", f"FloodWait: ждём {e.seconds} сек"); await asyncio.sleep(e.seconds)
             except Exception as e: add_log("ERROR", f"Не удалось запустить бота: {e}"); break
-    await cleanup_old_backups()
-    await init_protected_users()
-    await restore_state()
-    asyncio.create_task(backup_loop())
-    asyncio.create_task(schedule_runner())
+    await cleanup_old_backups(); await init_protected_users(); await restore_state()
+    asyncio.create_task(backup_loop()); asyncio.create_task(schedule_runner())
     signal.signal(signal.SIGTERM, shutdown_handler)
     await start_web_server()
     tasks = [client1.run_until_disconnected()]
