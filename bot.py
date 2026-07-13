@@ -16,7 +16,6 @@ from bs4 import BeautifulSoup
 
 AudioSegment.converter = "/opt/render/project/src/ffmpeg"
 
-# ---------- Конфигурация ----------
 API_ID = int(os.environ["API_ID"])
 API_HASH = os.environ["API_HASH"]
 SESSION_STRING_1 = os.environ["SESSION_STRING"]
@@ -30,13 +29,10 @@ ACC2_DISPLAY_NAME = os.environ.get("ACC2_DISPLAY_NAME", "")
 OWNER_USERNAME = os.environ.get("OWNER_USERNAME", "Anopchenko2011")
 BACKUP_INTERVAL = int(os.environ.get("BACKUP_INTERVAL", "300"))
 BACKUP_KEY = os.environ.get("BACKUP_KEY", "")
-MISTRAL_API_KEY = os.environ.get("MISTRAL_API_KEY", "")
-custom_ai_token = MISTRAL_API_KEY
 AI_MODEL = os.environ.get("MISTRAL_MODEL", "mistral-tiny")
 AI_MAX_TOKENS = 150
 AI_TEMPERATURE = 0.7
 AI_SYSTEM_PROMPT = "Ты — дружелюбный собеседник. Отвечай кратко, разговорным стилем, без примеров и лишних объяснений. Если что-то непонятно — уточни, но не пиши эссе."
-AI_WELCOME_MESSAGE = "👋 Привет! Мой владелец отошёл, но ты можешь поболтать со мной. Я его виртуальный помощник, спрашивай что хочешь 😊"
 
 DATA_FILE = Path("userbot_data.json")
 LOG_FILE = Path("command_history.json")
@@ -52,6 +48,7 @@ FILTERS_FILE = Path("filters.json")
 BLACKLIST_FILE = Path("blacklist.json")
 SCHEDULE_FILE = Path("schedule.json")
 LAST_MSG_FILE = Path("last_backup_msg.json")
+AI_TOKEN_FILE = Path("ai_token.json")
 TEMPLATES_DIR = Path("templates")
 
 if BACKUP_KEY:
@@ -100,6 +97,8 @@ ai_auto_reply_enabled = False
 ai_conversations = {}
 ai_chat_enabled = {}
 ai_stats = {"total_tokens": 0, "requests": 0, "daily": {}, "chats": {}}
+custom_ai_token = load_json(AI_TOKEN_FILE, "")
+last_ai_response = {}
 
 HTML_LOGIN = (TEMPLATES_DIR / "login.html").read_text(encoding="utf-8")
 HTML_DASHBOARD = (TEMPLATES_DIR / "dashboard.html").read_text(encoding="utf-8")
@@ -188,7 +187,7 @@ def update_ai_stats(tokens_used, chat_id=None):
         ai_stats["chats"][str(chat_id)] = ai_stats["chats"].get(str(chat_id), 0) + tokens_used
 
 def mistral_ai(query, model=AI_MODEL, max_tokens=AI_MAX_TOKENS):
-    if not custom_ai_token: return "❌ API ключ не задан."
+    if not custom_ai_token: return "❌ API ключ не задан. Введите его во вкладке «AI Token»."
     url = "https://api.mistral.ai/v1/chat/completions"
     headers = {"Authorization": f"Bearer {custom_ai_token}", "Content-Type": "application/json"}
     payload = {"model": model, "messages": [{"role": "system", "content": AI_SYSTEM_PROMPT}, {"role": "user", "content": query}], "max_tokens": max_tokens, "temperature": AI_TEMPERATURE}
@@ -203,7 +202,7 @@ def mistral_ai(query, model=AI_MODEL, max_tokens=AI_MAX_TOKENS):
     except Exception as e: return f"⚠️ Сетевая ошибка: {e}"
 
 def mistral_ai_chat(chat_id, user_message):
-    if not custom_ai_token: return "❌ API ключ не задан."
+    if not custom_ai_token: return "❌ API ключ не задан. Введите его во вкладке «AI Token»."
     if chat_id not in ai_conversations: ai_conversations[chat_id] = [{"role": "system", "content": AI_SYSTEM_PROMPT}]
     history = ai_conversations[chat_id]
     history.append({"role": "user", "content": user_message})
@@ -344,7 +343,7 @@ async def broadcast_state():
     owner_id = None
     try: owner = await client1.get_entity(OWNER_USERNAME); owner_id = owner.id
     except: pass
-    data = {"muted_chats": list(muted_chats), "protected_users": list(protected_users), "history": command_history, "chat_names": await get_chat_names(), "user_names": await get_user_names(), "acc1_name": (await client1.get_me()).first_name or "Аккаунт 1", "acc2_name": acc2_name, "invites": invites, "admins": list(admins.keys()), "extra_clients": list(extra_clients.keys()), "owner_id": owner_id, "backup_history": backup_history[-20:], "backup_status": backup_status, "afk_users": afk_users, "notes": notes, "auto_reply_global": auto_reply_global, "active_account": active_account, "theme": theme, "filters": filters, "blacklist": blacklist, "schedule": schedule, "ai_auto_reply_enabled": ai_auto_reply_enabled, "ai_chat_enabled": ai_chat_enabled, "ai_stats": ai_stats}
+    data = {"muted_chats": list(muted_chats), "protected_users": list(protected_users), "history": command_history, "chat_names": await get_chat_names(), "user_names": await get_user_names(), "acc1_name": (await client1.get_me()).first_name or "Аккаунт 1", "acc2_name": acc2_name, "invites": invites, "admins": list(admins.keys()), "extra_clients": list(extra_clients.keys()), "owner_id": owner_id, "backup_history": backup_history[-20:], "backup_status": backup_status, "afk_users": afk_users, "notes": notes, "auto_reply_global": auto_reply_global, "active_account": active_account, "theme": theme, "filters": filters, "blacklist": blacklist, "schedule": schedule, "ai_auto_reply_enabled": ai_auto_reply_enabled, "ai_chat_enabled": ai_chat_enabled, "ai_stats": ai_stats, "ai_token_set": bool(custom_ai_token)}
     msg = json.dumps(data, default=str, ensure_ascii=False)
     for ws in list(ws_clients):
         try: await ws.send_str(msg)
@@ -580,8 +579,7 @@ def register_handlers(client_instance):
             "<b>.history</b> — история последних команд\n<b>.stt</b> — распознать голосовое сообщение\n<b>.qr текст</b> — QR-код\n"
             "<b>.weather город</b> — погода\n<b>.tts текст</b> — голосовое сообщение\n<b>.sticker</b> — случайный стикер\n"
             "<b>.search [yandex|duck] запрос</b> — поиск\n<b>.recover [N]</b> — показать удалённые сообщения\n"
-            "<b>.ai вопрос</b> — задать вопрос ИИ\n<b>.ai on/off/status</b> — AI-автоответчик в ЛС\n"
-            "<b>.ai chat on/off/status</b> — AI-автоответчик в группах\n"
+            "<b>.ai вопрос</b> — задать вопрос ИИ\n<b>.ai on/off/status</b> — AI-автоответчик (глобальный)\n"
             "<b>.afk [причина]</b> / .unafk — режим AFK\n<b>.help</b> — это сообщение"
         )
         await event.client.send_message(event.chat_id, text, parse_mode='html')
@@ -714,8 +712,8 @@ def register_handlers(client_instance):
     async def ai_on_cmd(event):
         global ai_auto_reply_enabled
         ai_auto_reply_enabled = True; await event.delete()
-        await event.client.send_message(event.chat_id, "🤖 AI-автоответчик включён. Все входящие личные сообщения будут обрабатываться ИИ.")
-        add_log("AI", "AI-автоответчик включён"); await broadcast_state()
+        await event.client.send_message(event.chat_id, "🤖 AI-автоответчик включён. Бот будет отвечать на все сообщения во всех чатах.")
+        add_log("AI", "AI-автоответчик включён (глобальный)"); await broadcast_state()
 
     @client_instance.on(events.NewMessage(outgoing=True, pattern=r'^\.ai\s+off$'))
     async def ai_off_cmd(event):
@@ -730,31 +728,10 @@ def register_handlers(client_instance):
         status = "включён" if ai_auto_reply_enabled else "выключен"
         await event.client.send_message(event.chat_id, f"🤖 AI-автоответчик: {status}")
 
-    @client_instance.on(events.NewMessage(outgoing=True, pattern=r'^\.ai\s+chat\s+on$'))
-    async def ai_chat_on_cmd(event):
-        chat_id = event.chat_id
-        ai_chat_enabled[chat_id] = True; await event.delete()
-        await event.client.send_message(event.chat_id, "🤖 AI-чат включён в этом чате. Отвечаю на упоминания и реплаи.")
-        add_log("AI", f"AI-чат включён в чате {chat_id}"); await broadcast_state()
-
-    @client_instance.on(events.NewMessage(outgoing=True, pattern=r'^\.ai\s+chat\s+off$'))
-    async def ai_chat_off_cmd(event):
-        chat_id = event.chat_id
-        ai_chat_enabled[chat_id] = False; await event.delete()
-        await event.client.send_message(event.chat_id, "🤖 AI-чат выключен в этом чате.")
-        add_log("AI", f"AI-чат выключен в чате {chat_id}"); await broadcast_state()
-
-    @client_instance.on(events.NewMessage(outgoing=True, pattern=r'^\.ai\s+chat\s+status$'))
-    async def ai_chat_status_cmd(event):
-        chat_id = event.chat_id
-        status = "включён" if ai_chat_enabled.get(chat_id, False) else "выключен"
-        await event.delete()
-        await event.client.send_message(event.chat_id, f"🤖 AI-чат: {status}")
-
-    @client_instance.on(events.NewMessage(outgoing=True, pattern=r'^\.ai\s+(?!on|off|status|chat)(.+)'))
+    @client_instance.on(events.NewMessage(outgoing=True, pattern=r'^\.ai\s+(?!on|off|status)(.+)'))
     async def ai_ask_cmd(event):
         query = event.pattern_match.group(1).strip(); await event.delete()
-        if not custom_ai_token: await event.client.send_message(event.chat_id, "❌ API ключ не задан."); return
+        if not custom_ai_token: await event.client.send_message(event.chat_id, "❌ API ключ не задан. Введите его во вкладке «AI Token»."); return
         response = mistral_ai(query)
         await event.client.send_message(event.chat_id, response)
         add_log("AI", f"Запрос: {query[:50]}...")
@@ -764,52 +741,26 @@ def register_handlers(client_instance):
         if event.out: return
         chat_id = event.chat_id
 
-        # AI-автоответчик (только ЛС)
-        if ai_auto_reply_enabled and event.is_private and custom_ai_token:
-            if event.sender_id in protected_users: return
+        if ai_auto_reply_enabled and custom_ai_token:
             me = await event.client.get_me()
             if event.sender_id == me.id: return
+            now = time.time()
+            if chat_id in last_ai_response and now - last_ai_response[chat_id] < 2:
+                return
+            last_ai_response[chat_id] = now
             user_msg = event.text or ""
             if not user_msg.strip(): return
-            if chat_id not in ai_conversations or len(ai_conversations[chat_id]) <= 1:
-                await event.client.send_message(chat_id, AI_WELCOME_MESSAGE)
-                if chat_id not in ai_conversations: ai_conversations[chat_id] = [{"role": "system", "content": AI_SYSTEM_PROMPT}]
-                ai_conversations[chat_id].append({"role": "assistant", "content": AI_WELCOME_MESSAGE})
-                await asyncio.sleep(0.3)
             response = mistral_ai_chat(chat_id, user_msg)
             await event.client.send_message(chat_id, response)
-            add_log("AI", f"Ответил в ЛС ({chat_id}): {user_msg[:30]}...")
+            add_log("AI", f"Ответил в чате {chat_id}: {user_msg[:30]}...")
             return
 
-        # AI-чат в группе
-        if custom_ai_token and not event.is_private:
-            if chat_id not in ai_chat_enabled: ai_chat_enabled[chat_id] = False
-            if ai_chat_enabled[chat_id]:
-                me = await event.client.get_me()
-                mentioned = False
-                if event.text:
-                    if me.username and f"@{me.username}" in event.text.lower():
-                        mentioned = True
-                    elif any(kw in event.text.lower() for kw in ["бот", "помощник", "ассистент"]):
-                        mentioned = True
-                if event.reply_to and event.reply_to.from_id == me.id:
-                    mentioned = True
-                if mentioned:
-                    user_msg = event.text or ""
-                    if user_msg:
-                        response = mistral_ai_chat(chat_id, user_msg)
-                        await event.client.send_message(chat_id, response)
-                        add_log("AI", f"Ответил в чате {chat_id}: {user_msg[:30]}...")
-                        return
-
-        # Обычный мут
         if chat_id in muted_chats:
             if event.sender_id not in protected_users:
                 try: await event.delete()
                 except: pass
             return
 
-        # Обычный автоответчик
         chat_settings = auto_reply_chats.get(chat_id)
         if chat_settings and chat_settings.get('enabled'):
             reply_text = chat_settings.get('text')
@@ -1102,7 +1053,7 @@ async def websocket_handler(request):
     if token and token != "password_ok" and auth_tokens.get(token) != True: return web.Response(status=401)
     if invite_token and invite_token not in invites: return web.Response(status=401)
     ws = web.WebSocketResponse(); await ws.prepare(request); ws_clients.add(ws)
-    initial = {"muted_chats": list(muted_chats), "protected_users": list(protected_users), "history": command_history, "chat_names": await get_chat_names(), "user_names": await get_user_names(), "acc1_name": (await client1.get_me()).first_name or "Аккаунт 1", "acc2_name": ACC2_DISPLAY_NAME if ACC2_DISPLAY_NAME else (await client2.get_me()).first_name if client2 else None, "admins": list(admins.keys()), "extra_clients": list(extra_clients.keys()), "backup_history": backup_history[-20:], "backup_status": backup_status, "afk_users": afk_users, "notes": notes, "auto_reply_global": auto_reply_global, "active_account": active_account, "theme": theme, "filters": filters, "blacklist": blacklist, "schedule": schedule, "ai_auto_reply_enabled": ai_auto_reply_enabled, "ai_chat_enabled": ai_chat_enabled, "ai_stats": ai_stats}
+    initial = {"muted_chats": list(muted_chats), "protected_users": list(protected_users), "history": command_history, "chat_names": await get_chat_names(), "user_names": await get_user_names(), "acc1_name": (await client1.get_me()).first_name or "Аккаунт 1", "acc2_name": ACC2_DISPLAY_NAME if ACC2_DISPLAY_NAME else (await client2.get_me()).first_name if client2 else None, "admins": list(admins.keys()), "extra_clients": list(extra_clients.keys()), "backup_history": backup_history[-20:], "backup_status": backup_status, "afk_users": afk_users, "notes": notes, "auto_reply_global": auto_reply_global, "active_account": active_account, "theme": theme, "filters": filters, "blacklist": blacklist, "schedule": schedule, "ai_auto_reply_enabled": ai_auto_reply_enabled, "ai_chat_enabled": ai_chat_enabled, "ai_stats": ai_stats, "ai_token_set": bool(custom_ai_token)}
     await ws.send_str(json.dumps(initial, default=str, ensure_ascii=False))
     logs = log_buffer[-50:]; await ws.send_str(json.dumps({"event": "logs_init", "logs": logs}, ensure_ascii=False))
     async for msg in ws: pass
@@ -1264,6 +1215,7 @@ async def api_set_ai_token(request):
     token = data.get('token', '').strip()
     if token:
         custom_ai_token = token
+        save_json(AI_TOKEN_FILE, token)
         add_log("AI", "Пользователь обновил AI-токен")
     return web.Response(text="OK")
 
