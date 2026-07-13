@@ -31,6 +31,7 @@ OWNER_USERNAME = os.environ.get("OWNER_USERNAME", "Anopchenko2011")
 BACKUP_INTERVAL = int(os.environ.get("BACKUP_INTERVAL", "300"))
 BACKUP_KEY = os.environ.get("BACKUP_KEY", "")
 MISTRAL_API_KEY = os.environ.get("MISTRAL_API_KEY", "")
+custom_ai_token = MISTRAL_API_KEY
 AI_MODEL = os.environ.get("MISTRAL_MODEL", "mistral-tiny")
 AI_MAX_TOKENS = 150
 AI_TEMPERATURE = 0.7
@@ -187,9 +188,9 @@ def update_ai_stats(tokens_used, chat_id=None):
         ai_stats["chats"][str(chat_id)] = ai_stats["chats"].get(str(chat_id), 0) + tokens_used
 
 def mistral_ai(query, model=AI_MODEL, max_tokens=AI_MAX_TOKENS):
-    if not MISTRAL_API_KEY: return "❌ Mistral API ключ не задан."
+    if not custom_ai_token: return "❌ API ключ не задан."
     url = "https://api.mistral.ai/v1/chat/completions"
-    headers = {"Authorization": f"Bearer {MISTRAL_API_KEY}", "Content-Type": "application/json"}
+    headers = {"Authorization": f"Bearer {custom_ai_token}", "Content-Type": "application/json"}
     payload = {"model": model, "messages": [{"role": "system", "content": AI_SYSTEM_PROMPT}, {"role": "user", "content": query}], "max_tokens": max_tokens, "temperature": AI_TEMPERATURE}
     try:
         resp = requests.post(url, json=payload, headers=headers, timeout=30)
@@ -202,12 +203,13 @@ def mistral_ai(query, model=AI_MODEL, max_tokens=AI_MAX_TOKENS):
     except Exception as e: return f"⚠️ Сетевая ошибка: {e}"
 
 def mistral_ai_chat(chat_id, user_message):
+    if not custom_ai_token: return "❌ API ключ не задан."
     if chat_id not in ai_conversations: ai_conversations[chat_id] = [{"role": "system", "content": AI_SYSTEM_PROMPT}]
     history = ai_conversations[chat_id]
     history.append({"role": "user", "content": user_message})
     if len(history) > 11: history = [history[0]] + history[-10:]; ai_conversations[chat_id] = history
     url = "https://api.mistral.ai/v1/chat/completions"
-    headers = {"Authorization": f"Bearer {MISTRAL_API_KEY}", "Content-Type": "application/json"}
+    headers = {"Authorization": f"Bearer {custom_ai_token}", "Content-Type": "application/json"}
     payload = {"model": AI_MODEL, "messages": history, "max_tokens": AI_MAX_TOKENS, "temperature": AI_TEMPERATURE}
     try:
         resp = requests.post(url, json=payload, headers=headers, timeout=30)
@@ -752,7 +754,7 @@ def register_handlers(client_instance):
     @client_instance.on(events.NewMessage(outgoing=True, pattern=r'^\.ai\s+(?!on|off|status|chat)(.+)'))
     async def ai_ask_cmd(event):
         query = event.pattern_match.group(1).strip(); await event.delete()
-        if not MISTRAL_API_KEY: await event.client.send_message(event.chat_id, "❌ Mistral API ключ не задан."); return
+        if not custom_ai_token: await event.client.send_message(event.chat_id, "❌ API ключ не задан."); return
         response = mistral_ai(query)
         await event.client.send_message(event.chat_id, response)
         add_log("AI", f"Запрос: {query[:50]}...")
@@ -763,7 +765,7 @@ def register_handlers(client_instance):
         chat_id = event.chat_id
 
         # AI-автоответчик (только ЛС)
-        if ai_auto_reply_enabled and event.is_private and MISTRAL_API_KEY:
+        if ai_auto_reply_enabled and event.is_private and custom_ai_token:
             if event.sender_id in protected_users: return
             me = await event.client.get_me()
             if event.sender_id == me.id: return
@@ -780,7 +782,7 @@ def register_handlers(client_instance):
             return
 
         # AI-чат в группе
-        if MISTRAL_API_KEY and not event.is_private:
+        if custom_ai_token and not event.is_private:
             if chat_id not in ai_chat_enabled: ai_chat_enabled[chat_id] = False
             if ai_chat_enabled[chat_id]:
                 me = await event.client.get_me()
@@ -1256,6 +1258,15 @@ async def api_ai_daily(request):
 async def api_ai_chats(request):
     return web.json_response(ai_stats["chats"])
 
+async def api_set_ai_token(request):
+    data = await request.post()
+    global custom_ai_token
+    token = data.get('token', '').strip()
+    if token:
+        custom_ai_token = token
+        add_log("AI", "Пользователь обновил AI-токен")
+    return web.Response(text="OK")
+
 app = web.Application()
 app.router.add_get("/", lambda r: web.Response(text="OK"))
 app.router.add_get("/login", login_page)
@@ -1298,6 +1309,7 @@ app.router.add_post("/api/delete_message", api_delete_message)
 app.router.add_get("/api/ai/stats", api_ai_stats)
 app.router.add_get("/api/ai/daily", api_ai_daily)
 app.router.add_get("/api/ai/chats", api_ai_chats)
+app.router.add_post("/api/set_ai_token", api_set_ai_token)
 
 async def start_web_server():
     runner = web.AppRunner(app); await runner.setup()
