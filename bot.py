@@ -97,7 +97,6 @@ ai_auto_reply_enabled = False
 ai_conversations = {}
 ai_chat_enabled = {}
 ai_stats = {"total_tokens": 0, "requests": 0, "daily": {}, "chats": {}}
-custom_ai_token = load_json(AI_TOKEN_FILE, "")
 last_ai_response = {}
 
 HTML_LOGIN = (TEMPLATES_DIR / "login.html").read_text(encoding="utf-8")
@@ -111,6 +110,9 @@ def load_json(path, default):
     return default
 def save_json(path, data): path.write_text(json.dumps(data, ensure_ascii=False))
 def hash_password(p): return hashlib.sha256(p.encode()).hexdigest()
+
+# ---------- Загрузка AI-токена ----------
+custom_ai_token = load_json(AI_TOKEN_FILE, "")
 
 def load_admins():
     global admins
