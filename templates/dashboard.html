@@ -78,6 +78,8 @@
     <button data-tab="stats">📊 Статистика</button>
     <button data-tab="chats">💬 Чаты</button>
     <button data-tab="logs">📄 Логи</button>
+    <button data-tab="aistats">🧠 AI</button>
+    <button data-tab="aitoken">🔑 AI Token</button>
   </div>
   <div class="content">
     <div id="muted" class="tab-pane active">
@@ -192,6 +194,21 @@
       </div>
       <div class="log-container" id="logContainer"></div>
     </div>
+    <!-- AI Statistics Tab -->
+    <div id="aistats" class="tab-pane">
+      <h4>Использование AI</h4>
+      <canvas id="aiDailyChart" width="400" height="200"></canvas>
+      <canvas id="aiChatsChart" width="400" height="200" style="margin-top:1rem;"></canvas>
+    </div>
+    <!-- AI Token Tab -->
+    <div id="aitoken" class="tab-pane">
+      <div style="max-width:400px;">
+        <p>Введите новый токен Mistral AI (или совместимый). После сохранения он сразу применится.</p>
+        <input type="password" id="aiTokenInput" placeholder="sk-..." style="width:100%;">
+        <button class="btn-custom" onclick="saveAiToken()" style="margin-top:0.5rem;">Сохранить</button>
+        <div id="aiTokenMsg" style="margin-top:0.5rem; color:#7ee787;"></div>
+      </div>
+    </div>
   </div>
   <div id="notification" class="notification"></div>
   <script>
@@ -279,6 +296,11 @@
       extraAccounts.forEach(function(name) { chatSel.add(new Option(name, name)); });
       chatSel.value = activeAccount;
 
+      // AI stats charts
+      if (data.ai_stats) {
+        updateAiCharts(data.ai_stats);
+      }
+
       renderMuted(data);
       renderProtected(data);
       renderHistory();
@@ -289,6 +311,32 @@
       renderFilters();
       renderSchedule();
       updateStatsChart();
+    }
+
+    function updateAiCharts(stats) {
+      // Daily chart
+      var dailyCtx = document.getElementById('aiDailyChart')?.getContext('2d');
+      if (dailyCtx) {
+        var labels = Object.keys(stats.daily).sort();
+        var values = labels.map(d => stats.daily[d]);
+        if (window.aiDailyChart) window.aiDailyChart.destroy();
+        window.aiDailyChart = new Chart(dailyCtx, {
+          type: 'line',
+          data: { labels, datasets: [{ label: 'Токены по дням', data: values, borderColor: '#e94560' }] }
+        });
+      }
+      // Chats chart
+      var chatsCtx = document.getElementById('aiChatsChart')?.getContext('2d');
+      if (chatsCtx) {
+        var chatEntries = Object.entries(stats.chats).sort((a,b) => b[1]-a[1]).slice(0, 5);
+        var chatLabels = chatEntries.map(e => e[0]);
+        var chatValues = chatEntries.map(e => e[1]);
+        if (window.aiChatsChart) window.aiChatsChart.destroy();
+        window.aiChatsChart = new Chart(chatsCtx, {
+          type: 'bar',
+          data: { labels: chatLabels, datasets: [{ label: 'Токены по чатам (топ 5)', data: chatValues, backgroundColor: '#e94560' }] }
+        });
+      }
     }
 
     function renderMuted(data) {
@@ -518,7 +566,6 @@
         html += '<div class="message ' + cls + '"><div class="message-text">' + (msg.text || '') + '</div><div style="font-size:0.7rem;">' + msg.date.substr(11,8) + ' ' + (msg.sender||'') + ' <button class="btn-custom" onclick="deleteMessage(' + msg.id + ')" style="font-size:0.6rem;padding:0.1rem 0.3rem;">Удалить</button></div></div>';
       });
       document.getElementById('messagesList').innerHTML = html;
-      // Прокручиваем вниз
       var msgList = document.getElementById('messagesList');
       msgList.scrollTop = msgList.scrollHeight;
     }
@@ -533,7 +580,6 @@
         body: new URLSearchParams({account: account, chat_id: activeChatId, text: text})
       });
       document.getElementById('messageInput').value = '';
-      // Перезагружаем чаты и сообщения
       loadChats();
       openChat(activeChatId, '');
     }
@@ -563,6 +609,15 @@
         html += '<div style="color:' + color + ';">[' + l.time + '] ' + l.type + ' ' + l.text + '</div>';
       });
       document.getElementById('logContainer').innerHTML = html || 'Нет записей';
+    }
+
+    async function saveAiToken() {
+      var token = document.getElementById('aiTokenInput').value.trim();
+      if (!token) return;
+      await fetch('/api/set_ai_token', { method: 'POST', body: new URLSearchParams({token: token}) });
+      document.getElementById('aiTokenInput').value = '';
+      document.getElementById('aiTokenMsg').textContent = '✅ Токен сохранён!';
+      setTimeout(() => { document.getElementById('aiTokenMsg').textContent = ''; }, 3000);
     }
 
     document.querySelectorAll('.tabs button').forEach(function(btn) {
