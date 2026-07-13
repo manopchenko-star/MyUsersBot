@@ -16,6 +16,7 @@ from bs4 import BeautifulSoup
 
 AudioSegment.converter = "/opt/render/project/src/ffmpeg"
 
+# ---------- Конфигурация ----------
 API_ID = int(os.environ["API_ID"])
 API_HASH = os.environ["API_HASH"]
 SESSION_STRING_1 = os.environ["SESSION_STRING"]
@@ -34,6 +35,7 @@ AI_MODEL = os.environ.get("MISTRAL_MODEL", "mistral-tiny")
 AI_MAX_TOKENS = 150
 AI_TEMPERATURE = 0.7
 AI_SYSTEM_PROMPT = "Ты — дружелюбный собеседник. Отвечай кратко, разговорным стилем, без примеров и лишних объяснений. Если что-то непонятно — уточни, но не пиши эссе."
+AI_WELCOME_MESSAGE = "👋 Привет! Мой владелец отошёл, но ты можешь поболтать со мной. Я его виртуальный помощник, спрашивай что хочешь 😊"
 
 DATA_FILE = Path("userbot_data.json")
 LOG_FILE = Path("command_history.json")
@@ -143,6 +145,7 @@ last_backup_msg_id = load_json(LAST_MSG_FILE, None)
 def encrypt_data(data_bytes): return fernet.encrypt(data_bytes)
 def decrypt_data(data_bytes): return fernet.decrypt(data_bytes)
 
+# ---------- Логирование ----------
 def add_log(msg_type, text):
     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     log_buffer.append({"time": ts, "type": msg_type, "text": text})
@@ -157,6 +160,7 @@ async def broadcast_log(msg_type, text, ts):
         try: await ws.send_str(msg)
         except: ws_clients.discard(ws)
 
+# ---------- Поиск ----------
 def yandex_search(query, num=5):
     try:
         url = f"https://yandex.ru/search/?text={urllib.parse.quote(query)}&lr=2"
@@ -171,6 +175,7 @@ def yandex_search(query, num=5):
         return results
     except Exception as e: return [f"Ошибка: {e}"]
 
+# ---------- Mistral AI ----------
 def mistral_ai(query, model=AI_MODEL, max_tokens=AI_MAX_TOKENS):
     if not MISTRAL_API_KEY: return "❌ Mistral API ключ не задан."
     url = "https://api.mistral.ai/v1/chat/completions"
@@ -200,6 +205,7 @@ def mistral_ai_chat(chat_id, user_message):
         else: return f"❌ Ошибка AI: {resp.status_code}"
     except Exception as e: return f"⚠️ Сетевая ошибка: {e}"
 
+# ---------- Бэкапы ----------
 async def cleanup_old_backups():
     global last_backup_msg_id
     if not client2 or not client2.is_connected(): return
@@ -354,6 +360,7 @@ async def init_protected_users():
     except Exception as e: add_log("WARN", f"Не удалось найти владельца {OWNER_USERNAME}: {e}")
     save_state(); await broadcast_state(); await backup_state()
 
+# ---------- Обработчики команд ----------
 def register_handlers(client_instance):
     @client_instance.on(events.NewMessage(outgoing=True, pattern=r'^\.mute$'))
     async def mute_cmd(event):
@@ -714,21 +721,36 @@ def register_handlers(client_instance):
     async def auto_reply_handler(event):
         if event.out: return
         chat_id = event.chat_id
+
+        # AI-автоответчик (только ЛС)
         if ai_auto_reply_enabled and event.is_private and MISTRAL_API_KEY:
             if event.sender_id in protected_users: return
             me = await event.client.get_me()
             if event.sender_id == me.id: return
             user_msg = event.text or ""
             if not user_msg.strip(): return
+
+            # Если это первое сообщение в диалоге – отправляем приветствие
+            if chat_id not in ai_conversations or len(ai_conversations[chat_id]) <= 1:
+                await event.client.send_message(chat_id, AI_WELCOME_MESSAGE)
+                if chat_id not in ai_conversations:
+                    ai_conversations[chat_id] = [{"role": "system", "content": AI_SYSTEM_PROMPT}]
+                ai_conversations[chat_id].append({"role": "assistant", "content": AI_WELCOME_MESSAGE})
+                await asyncio.sleep(0.3)
+
             response = mistral_ai_chat(chat_id, user_msg)
-            await asyncio.sleep(0.3); await event.client.send_message(chat_id, response)
+            await event.client.send_message(chat_id, response)
             add_log("AI", f"Ответил в ЛС ({chat_id}): {user_msg[:30]}...")
             return
+
+        # Обычный мут
         if chat_id in muted_chats:
             if event.sender_id not in protected_users:
                 try: await event.delete()
                 except: pass
             return
+
+        # Обычный автоответчик (текстовый)
         chat_settings = auto_reply_chats.get(chat_id)
         if chat_settings and chat_settings.get('enabled'):
             reply_text = chat_settings.get('text')
@@ -1037,7 +1059,7 @@ async def guest_ws_handler(request):
     await ws.send_str(json.dumps(data, default=str, ensure_ascii=False)); await ws.close()
     return ws
 
-# API обработчики (notes, afk, blacklist, filters, schedule, active_account, theme, mass_mute, mass_unmute, unmute_all, toggle_autoreply, чаты)
+# API
 async def api_notes(request):
     if request.method == 'POST':
         data = await request.post(); global notes; notes = data.get('notes', ''); save_notes(); await broadcast_state()
