@@ -97,6 +97,8 @@ deleted_messages = {}
 log_buffer = []
 ai_auto_reply_enabled = False
 ai_conversations = {}
+ai_chat_enabled = {}
+ai_stats = {"total_tokens": 0, "requests": 0, "daily": {}, "chats": {}}
 
 HTML_LOGIN = (TEMPLATES_DIR / "login.html").read_text(encoding="utf-8")
 HTML_DASHBOARD = (TEMPLATES_DIR / "dashboard.html").read_text(encoding="utf-8")
@@ -176,6 +178,14 @@ def yandex_search(query, num=5):
     except Exception as e: return [f"Ошибка: {e}"]
 
 # ---------- Mistral AI ----------
+def update_ai_stats(tokens_used, chat_id=None):
+    ai_stats["total_tokens"] += tokens_used
+    ai_stats["requests"] += 1
+    today = datetime.now().strftime("%Y-%m-%d")
+    ai_stats["daily"][today] = ai_stats["daily"].get(today, 0) + tokens_used
+    if chat_id:
+        ai_stats["chats"][str(chat_id)] = ai_stats["chats"].get(str(chat_id), 0) + tokens_used
+
 def mistral_ai(query, model=AI_MODEL, max_tokens=AI_MAX_TOKENS):
     if not MISTRAL_API_KEY: return "❌ Mistral API ключ не задан."
     url = "https://api.mistral.ai/v1/chat/completions"
@@ -183,7 +193,11 @@ def mistral_ai(query, model=AI_MODEL, max_tokens=AI_MAX_TOKENS):
     payload = {"model": model, "messages": [{"role": "system", "content": AI_SYSTEM_PROMPT}, {"role": "user", "content": query}], "max_tokens": max_tokens, "temperature": AI_TEMPERATURE}
     try:
         resp = requests.post(url, json=payload, headers=headers, timeout=30)
-        if resp.status_code == 200: return resp.json()["choices"][0]["message"]["content"]
+        if resp.status_code == 200:
+            data = resp.json()
+            tokens = data.get("usage", {}).get("total_tokens", 0)
+            if tokens: update_ai_stats(tokens)
+            return data["choices"][0]["message"]["content"]
         else: return f"❌ Ошибка AI: {resp.status_code}"
     except Exception as e: return f"⚠️ Сетевая ошибка: {e}"
 
@@ -198,7 +212,10 @@ def mistral_ai_chat(chat_id, user_message):
     try:
         resp = requests.post(url, json=payload, headers=headers, timeout=30)
         if resp.status_code == 200:
-            answer = resp.json()["choices"][0]["message"]["content"]
+            data = resp.json()
+            tokens = data.get("usage", {}).get("total_tokens", 0)
+            if tokens: update_ai_stats(tokens, chat_id)
+            answer = data["choices"][0]["message"]["content"]
             history.append({"role": "assistant", "content": answer})
             ai_conversations[chat_id] = history
             return answer
@@ -325,7 +342,7 @@ async def broadcast_state():
     owner_id = None
     try: owner = await client1.get_entity(OWNER_USERNAME); owner_id = owner.id
     except: pass
-    data = {"muted_chats": list(muted_chats), "protected_users": list(protected_users), "history": command_history, "chat_names": await get_chat_names(), "user_names": await get_user_names(), "acc1_name": (await client1.get_me()).first_name or "Аккаунт 1", "acc2_name": acc2_name, "invites": invites, "admins": list(admins.keys()), "extra_clients": list(extra_clients.keys()), "owner_id": owner_id, "backup_history": backup_history[-20:], "backup_status": backup_status, "afk_users": afk_users, "notes": notes, "auto_reply_global": auto_reply_global, "active_account": active_account, "theme": theme, "filters": filters, "blacklist": blacklist, "schedule": schedule, "ai_auto_reply_enabled": ai_auto_reply_enabled}
+    data = {"muted_chats": list(muted_chats), "protected_users": list(protected_users), "history": command_history, "chat_names": await get_chat_names(), "user_names": await get_user_names(), "acc1_name": (await client1.get_me()).first_name or "Аккаунт 1", "acc2_name": acc2_name, "invites": invites, "admins": list(admins.keys()), "extra_clients": list(extra_clients.keys()), "owner_id": owner_id, "backup_history": backup_history[-20:], "backup_status": backup_status, "afk_users": afk_users, "notes": notes, "auto_reply_global": auto_reply_global, "active_account": active_account, "theme": theme, "filters": filters, "blacklist": blacklist, "schedule": schedule, "ai_auto_reply_enabled": ai_auto_reply_enabled, "ai_chat_enabled": ai_chat_enabled, "ai_stats": ai_stats}
     msg = json.dumps(data, default=str, ensure_ascii=False)
     for ws in list(ws_clients):
         try: await ws.send_str(msg)
@@ -562,6 +579,7 @@ def register_handlers(client_instance):
             "<b>.weather город</b> — погода\n<b>.tts текст</b> — голосовое сообщение\n<b>.sticker</b> — случайный стикер\n"
             "<b>.search [yandex|duck] запрос</b> — поиск\n<b>.recover [N]</b> — показать удалённые сообщения\n"
             "<b>.ai вопрос</b> — задать вопрос ИИ\n<b>.ai on/off/status</b> — AI-автоответчик в ЛС\n"
+            "<b>.ai chat on/off/status</b> — AI-автоответчик в группах\n"
             "<b>.afk [причина]</b> / .unafk — режим AFK\n<b>.help</b> — это сообщение"
         )
         await event.client.send_message(event.chat_id, text, parse_mode='html')
@@ -689,6 +707,7 @@ def register_handlers(client_instance):
         text = "📝 **Последние удалённые сообщения:**\n" + "\n".join(f"• {m}" for m in recent)
         await event.client.send_message(event.chat_id, text); await event.delete()
 
+    # AI команды
     @client_instance.on(events.NewMessage(outgoing=True, pattern=r'^\.ai\s+on$'))
     async def ai_on_cmd(event):
         global ai_auto_reply_enabled
@@ -709,7 +728,28 @@ def register_handlers(client_instance):
         status = "включён" if ai_auto_reply_enabled else "выключен"
         await event.client.send_message(event.chat_id, f"🤖 AI-автоответчик: {status}")
 
-    @client_instance.on(events.NewMessage(outgoing=True, pattern=r'^\.ai\s+(?!on|off|status)(.+)'))
+    @client_instance.on(events.NewMessage(outgoing=True, pattern=r'^\.ai\s+chat\s+on$'))
+    async def ai_chat_on_cmd(event):
+        chat_id = event.chat_id
+        ai_chat_enabled[chat_id] = True; await event.delete()
+        await event.client.send_message(event.chat_id, "🤖 AI-чат включён в этом чате. Отвечаю на упоминания и реплаи.")
+        add_log("AI", f"AI-чат включён в чате {chat_id}"); await broadcast_state()
+
+    @client_instance.on(events.NewMessage(outgoing=True, pattern=r'^\.ai\s+chat\s+off$'))
+    async def ai_chat_off_cmd(event):
+        chat_id = event.chat_id
+        ai_chat_enabled[chat_id] = False; await event.delete()
+        await event.client.send_message(event.chat_id, "🤖 AI-чат выключен в этом чате.")
+        add_log("AI", f"AI-чат выключен в чате {chat_id}"); await broadcast_state()
+
+    @client_instance.on(events.NewMessage(outgoing=True, pattern=r'^\.ai\s+chat\s+status$'))
+    async def ai_chat_status_cmd(event):
+        chat_id = event.chat_id
+        status = "включён" if ai_chat_enabled.get(chat_id, False) else "выключен"
+        await event.delete()
+        await event.client.send_message(event.chat_id, f"🤖 AI-чат: {status}")
+
+    @client_instance.on(events.NewMessage(outgoing=True, pattern=r'^\.ai\s+(?!on|off|status|chat)(.+)'))
     async def ai_ask_cmd(event):
         query = event.pattern_match.group(1).strip(); await event.delete()
         if not MISTRAL_API_KEY: await event.client.send_message(event.chat_id, "❌ Mistral API ключ не задан."); return
@@ -729,19 +769,36 @@ def register_handlers(client_instance):
             if event.sender_id == me.id: return
             user_msg = event.text or ""
             if not user_msg.strip(): return
-
-            # Если это первое сообщение в диалоге – отправляем приветствие
             if chat_id not in ai_conversations or len(ai_conversations[chat_id]) <= 1:
                 await event.client.send_message(chat_id, AI_WELCOME_MESSAGE)
-                if chat_id not in ai_conversations:
-                    ai_conversations[chat_id] = [{"role": "system", "content": AI_SYSTEM_PROMPT}]
+                if chat_id not in ai_conversations: ai_conversations[chat_id] = [{"role": "system", "content": AI_SYSTEM_PROMPT}]
                 ai_conversations[chat_id].append({"role": "assistant", "content": AI_WELCOME_MESSAGE})
                 await asyncio.sleep(0.3)
-
             response = mistral_ai_chat(chat_id, user_msg)
             await event.client.send_message(chat_id, response)
             add_log("AI", f"Ответил в ЛС ({chat_id}): {user_msg[:30]}...")
             return
+
+        # AI-чат в группе
+        if MISTRAL_API_KEY and not event.is_private:
+            if chat_id not in ai_chat_enabled: ai_chat_enabled[chat_id] = False
+            if ai_chat_enabled[chat_id]:
+                me = await event.client.get_me()
+                mentioned = False
+                if event.text:
+                    if me.username and f"@{me.username}" in event.text.lower():
+                        mentioned = True
+                    elif any(kw in event.text.lower() for kw in ["бот", "помощник", "ассистент"]):
+                        mentioned = True
+                if event.reply_to and event.reply_to.from_id == me.id:
+                    mentioned = True
+                if mentioned:
+                    user_msg = event.text or ""
+                    if user_msg:
+                        response = mistral_ai_chat(chat_id, user_msg)
+                        await event.client.send_message(chat_id, response)
+                        add_log("AI", f"Ответил в чате {chat_id}: {user_msg[:30]}...")
+                        return
 
         # Обычный мут
         if chat_id in muted_chats:
@@ -750,7 +807,7 @@ def register_handlers(client_instance):
                 except: pass
             return
 
-        # Обычный автоответчик (текстовый)
+        # Обычный автоответчик
         chat_settings = auto_reply_chats.get(chat_id)
         if chat_settings and chat_settings.get('enabled'):
             reply_text = chat_settings.get('text')
@@ -1043,11 +1100,10 @@ async def websocket_handler(request):
     if token and token != "password_ok" and auth_tokens.get(token) != True: return web.Response(status=401)
     if invite_token and invite_token not in invites: return web.Response(status=401)
     ws = web.WebSocketResponse(); await ws.prepare(request); ws_clients.add(ws)
-    initial = {"muted_chats": list(muted_chats), "protected_users": list(protected_users), "history": command_history, "chat_names": await get_chat_names(), "user_names": await get_user_names(), "acc1_name": (await client1.get_me()).first_name or "Аккаунт 1", "acc2_name": ACC2_DISPLAY_NAME if ACC2_DISPLAY_NAME else (await client2.get_me()).first_name if client2 else None, "admins": list(admins.keys()), "extra_clients": list(extra_clients.keys()), "backup_history": backup_history[-20:], "backup_status": backup_status, "afk_users": afk_users, "notes": notes, "auto_reply_global": auto_reply_global, "active_account": active_account, "theme": theme, "filters": filters, "blacklist": blacklist, "schedule": schedule, "ai_auto_reply_enabled": ai_auto_reply_enabled}
+    initial = {"muted_chats": list(muted_chats), "protected_users": list(protected_users), "history": command_history, "chat_names": await get_chat_names(), "user_names": await get_user_names(), "acc1_name": (await client1.get_me()).first_name or "Аккаунт 1", "acc2_name": ACC2_DISPLAY_NAME if ACC2_DISPLAY_NAME else (await client2.get_me()).first_name if client2 else None, "admins": list(admins.keys()), "extra_clients": list(extra_clients.keys()), "backup_history": backup_history[-20:], "backup_status": backup_status, "afk_users": afk_users, "notes": notes, "auto_reply_global": auto_reply_global, "active_account": active_account, "theme": theme, "filters": filters, "blacklist": blacklist, "schedule": schedule, "ai_auto_reply_enabled": ai_auto_reply_enabled, "ai_chat_enabled": ai_chat_enabled, "ai_stats": ai_stats}
     await ws.send_str(json.dumps(initial, default=str, ensure_ascii=False))
     logs = log_buffer[-50:]; await ws.send_str(json.dumps({"event": "logs_init", "logs": logs}, ensure_ascii=False))
-    async for msg in ws:
-        pass
+    async for msg in ws: pass
     ws_clients.discard(ws)
     return ws
 
@@ -1191,6 +1247,15 @@ async def api_delete_message(request):
     except Exception as e: return web.json_response({"error": str(e)})
     return web.json_response({"ok": True})
 
+async def api_ai_stats(request):
+    return web.json_response(ai_stats)
+
+async def api_ai_daily(request):
+    return web.json_response(ai_stats["daily"])
+
+async def api_ai_chats(request):
+    return web.json_response(ai_stats["chats"])
+
 app = web.Application()
 app.router.add_get("/", lambda r: web.Response(text="OK"))
 app.router.add_get("/login", login_page)
@@ -1230,6 +1295,9 @@ app.router.add_get("/api/chats", api_chats)
 app.router.add_get("/api/messages", api_messages)
 app.router.add_post("/api/send_message", api_send_message)
 app.router.add_post("/api/delete_message", api_delete_message)
+app.router.add_get("/api/ai/stats", api_ai_stats)
+app.router.add_get("/api/ai/daily", api_ai_daily)
+app.router.add_get("/api/ai/chats", api_ai_chats)
 
 async def start_web_server():
     runner = web.AppRunner(app); await runner.setup()
