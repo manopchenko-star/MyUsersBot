@@ -80,6 +80,7 @@
     <button data-tab="logs">📄 Логи</button>
     <button data-tab="aistats">🧠 AI</button>
     <button data-tab="aitoken">🔑 AI Token</button>
+    <button data-tab="tdxt">🤖 TDXT Bot</button>
   </div>
   <div class="content">
     <div id="muted" class="tab-pane active">
@@ -209,6 +210,13 @@
         <div id="aiTokenMsg" style="margin-top:0.5rem; color:#7ee787;"></div>
       </div>
     </div>
+    <!-- TDXT Bot Tab -->
+    <div id="tdxt" class="tab-pane">
+      <h4>TDXT Bot Control</h4>
+      <p>Status: <span id="tdxtStatus">Stopped</span></p>
+      <button class="btn-custom" onclick="startTdxt()">▶ Start</button>
+      <button class="btn-custom" onclick="stopTdxt()">⏹ Stop</button>
+    </div>
   </div>
   <div id="notification" class="notification"></div>
   <script>
@@ -233,6 +241,9 @@
           sendMessage();
         }
       });
+      // Обновление статуса TDXT при загрузке
+      checkTdxtStatus();
+      setInterval(checkTdxtStatus, 5000);
     });
 
     function connectWS() {
@@ -314,7 +325,6 @@
     }
 
     function updateAiCharts(stats) {
-      // Daily chart
       var dailyCtx = document.getElementById('aiDailyChart')?.getContext('2d');
       if (dailyCtx) {
         var labels = Object.keys(stats.daily).sort();
@@ -325,7 +335,6 @@
           data: { labels, datasets: [{ label: 'Токены по дням', data: values, borderColor: '#e94560' }] }
         });
       }
-      // Chats chart
       var chatsCtx = document.getElementById('aiChatsChart')?.getContext('2d');
       if (chatsCtx) {
         var chatEntries = Object.entries(stats.chats).sort((a,b) => b[1]-a[1]).slice(0, 5);
@@ -618,6 +627,23 @@
       document.getElementById('aiTokenInput').value = '';
       document.getElementById('aiTokenMsg').textContent = '✅ Токен сохранён!';
       setTimeout(() => { document.getElementById('aiTokenMsg').textContent = ''; }, 3000);
+    }
+
+    // TDXT Bot functions
+    async function startTdxt() {
+      await fetch('/api/tdxt/start');
+      checkTdxtStatus();
+    }
+    async function stopTdxt() {
+      await fetch('/api/tdxt/stop');
+      checkTdxtStatus();
+    }
+    async function checkTdxtStatus() {
+      try {
+        let resp = await fetch('/api/tdxt/status');
+        let data = await resp.json();
+        document.getElementById('tdxtStatus').textContent = data.running ? 'Running' : 'Stopped';
+      } catch(e) {}
     }
 
     document.querySelectorAll('.tabs button').forEach(function(btn) {
