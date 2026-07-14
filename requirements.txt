@@ -9,3 +9,4 @@ cryptography
 duckduckgo-search
 beautifulsoup4
 requests
+python-telegram-bot==21.0
