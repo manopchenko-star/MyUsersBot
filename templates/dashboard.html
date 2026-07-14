@@ -222,6 +222,7 @@
   <script>
     var ws, fullHistory=[], acc1Name="Аккаунт 1", acc2Name="Аккаунт 2", extraAccounts=[], backupHistory=[], afkUsers={}, notes="", filters={}, blacklist=[], schedule=[], activeAccount="1", theme="dark", activeChatId=null;
     var allLogs = [];
+    var aiDailyChart, aiChatsChart;
 
     function showNotification(text, isError) {
       isError = isError || false;
@@ -241,7 +242,6 @@
           sendMessage();
         }
       });
-      // Обновление статуса TDXT при загрузке
       checkTdxtStatus();
       setInterval(checkTdxtStatus, 5000);
     });
@@ -307,7 +307,6 @@
       extraAccounts.forEach(function(name) { chatSel.add(new Option(name, name)); });
       chatSel.value = activeAccount;
 
-      // AI stats charts
       if (data.ai_stats) {
         updateAiCharts(data.ai_stats);
       }
@@ -325,23 +324,25 @@
     }
 
     function updateAiCharts(stats) {
-      var dailyCtx = document.getElementById('aiDailyChart')?.getContext('2d');
+      var dailyCtx = document.getElementById('aiDailyChart');
       if (dailyCtx) {
+        dailyCtx = dailyCtx.getContext('2d');
         var labels = Object.keys(stats.daily).sort();
         var values = labels.map(d => stats.daily[d]);
-        if (window.aiDailyChart) window.aiDailyChart.destroy();
-        window.aiDailyChart = new Chart(dailyCtx, {
+        if (aiDailyChart) aiDailyChart.destroy();
+        aiDailyChart = new Chart(dailyCtx, {
           type: 'line',
-          data: { labels, datasets: [{ label: 'Токены по дням', data: values, borderColor: '#e94560' }] }
+          data: { labels: labels, datasets: [{ label: 'Токены по дням', data: values, borderColor: '#e94560' }] }
         });
       }
-      var chatsCtx = document.getElementById('aiChatsChart')?.getContext('2d');
+      var chatsCtx = document.getElementById('aiChatsChart');
       if (chatsCtx) {
+        chatsCtx = chatsCtx.getContext('2d');
         var chatEntries = Object.entries(stats.chats).sort((a,b) => b[1]-a[1]).slice(0, 5);
         var chatLabels = chatEntries.map(e => e[0]);
         var chatValues = chatEntries.map(e => e[1]);
-        if (window.aiChatsChart) window.aiChatsChart.destroy();
-        window.aiChatsChart = new Chart(chatsCtx, {
+        if (aiChatsChart) aiChatsChart.destroy();
+        aiChatsChart = new Chart(chatsCtx, {
           type: 'bar',
           data: { labels: chatLabels, datasets: [{ label: 'Токены по чатам (топ 5)', data: chatValues, backgroundColor: '#e94560' }] }
         });
@@ -629,7 +630,6 @@
       setTimeout(() => { document.getElementById('aiTokenMsg').textContent = ''; }, 3000);
     }
 
-    // TDXT Bot functions
     async function startTdxt() {
       await fetch('/api/tdxt/start');
       checkTdxtStatus();
