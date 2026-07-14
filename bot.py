@@ -13,11 +13,10 @@ import speech_recognition as sr
 from pydub import AudioSegment
 from duckduckgo_search import DDGS
 from bs4 import BeautifulSoup
-import tdxt_bot  # <-- импорт TDXT‑бота
+import tdxt_bot
 
 AudioSegment.converter = "/opt/render/project/src/ffmpeg"
 
-# ---------- Конфигурация ----------
 API_ID = int(os.environ["API_ID"])
 API_HASH = os.environ["API_HASH"]
 SESSION_STRING_1 = os.environ["SESSION_STRING"]
@@ -148,7 +147,6 @@ last_backup_msg_id = load_json(LAST_MSG_FILE, None)
 def encrypt_data(data_bytes): return fernet.encrypt(data_bytes)
 def decrypt_data(data_bytes): return fernet.decrypt(data_bytes)
 
-# ---------- Логирование ----------
 def add_log(msg_type, text):
     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     log_buffer.append({"time": ts, "type": msg_type, "text": text})
@@ -163,7 +161,6 @@ async def broadcast_log(msg_type, text, ts):
         try: await ws.send_str(msg)
         except: ws_clients.discard(ws)
 
-# ---------- Поиск ----------
 def yandex_search(query, num=5):
     try:
         url = f"https://yandex.ru/search/?text={urllib.parse.quote(query)}&lr=2"
@@ -178,7 +175,6 @@ def yandex_search(query, num=5):
         return results
     except Exception as e: return [f"Ошибка: {e}"]
 
-# ---------- GitHub AI API ----------
 def update_ai_stats(tokens_used, chat_id=None):
     ai_stats["total_tokens"] += tokens_used
     ai_stats["requests"] += 1
@@ -223,7 +219,6 @@ def github_ai_chat(chat_id, user_message):
         else: return f"❌ Ошибка AI: {resp.status_code}"
     except Exception as e: return f"⚠️ Сетевая ошибка: {e}"
 
-# ---------- Бэкапы ----------
 async def cleanup_old_backups():
     global last_backup_msg_id
     if not client2 or not client2.is_connected(): return
@@ -848,9 +843,7 @@ register_handlers(client1)
 if client2: register_handlers(client2)
 for client_info in extra_clients.values(): register_handlers(client_info["client"])
 
-# ---------- Бот авторизации ----------
-if BOT_TOKEN:
-    bot = TelegramClient("auth_bot_session", API_ID, API_HASH)
+if bot:
     @bot.on(events.CallbackQuery)
     async def auth_callback(event):
         data = event.data.decode()
@@ -1350,6 +1343,10 @@ async def main():
             except Exception as e: add_log("ERROR", f"Не удалось запустить бота: {e}"); break
     await cleanup_old_backups(); await init_protected_users(); await restore_state()
     asyncio.create_task(backup_loop()); asyncio.create_task(schedule_runner())
+    # Автозапуск TDXT бота
+    if os.environ.get("TDXT_BOT_TOKEN"):
+        await tdxt_bot.start_tdxt()
+        add_log("TDXT", "TDXT бот автоматически запущен")
     signal.signal(signal.SIGTERM, shutdown_handler)
     await start_web_server()
     tasks = [client1.run_until_disconnected()]
