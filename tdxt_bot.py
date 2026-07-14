@@ -1,4 +1,4 @@
-import asyncio, sqlite3, os, logging
+import asyncio, sqlite3, os, logging, json
 from datetime import datetime, timedelta
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton
 from telegram.ext import (
@@ -40,7 +40,6 @@ pending_ban = {}
 pending_delete = {}
 pending_broadcast = set()
 
-# ---------- работа с БД ----------
 def get_db():
     return sqlite3.connect(DATABASE, check_same_thread=False)
 
@@ -66,18 +65,1034 @@ def init_db():
     conn.commit()
     conn.close()
 
-# ... (все остальные функции: get_all_admin_ids, add_admin_to_db, remove_admin_from_db, is_admin, is_main_admin,
-#      save_application, get_application, get_user_applications, has_pending_application,
-#      get_applications_by_status, add_vote, get_votes, count_votes, set_application_status,
-#      set_reject_reason, is_banned, ban_user, unban_user, get_banned_users,
-#      add_user, get_all_user_ids, get_all_users, get_user_count, get_ban_count, get_admin_count,
-#      get_app_counts, is_applications_open, set_applications_open, schedule_reopen, clear_scheduled_open,
-#      main_keyboard, clear_all_pending, и все обработчики команд и колбэков)
-#      – полностью копируются из исходного скрипта, который вы прислали.
-#      Здесь они опущены для краткости, но в реальном файле они ДОЛЖНЫ присутствовать.
-#      После функций идёт сборка приложения.
+def get_all_admin_ids():
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("SELECT user_id FROM admins")
+    ids = [row[0] for row in c.fetchall()]
+    conn.close()
+    return ids
 
-# Глобальное состояние
+def add_admin_to_db(user_id, username):
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("INSERT OR IGNORE INTO admins VALUES (?, ?)", (user_id, username))
+    conn.commit()
+    conn.close()
+
+def remove_admin_from_db(user_id):
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("DELETE FROM admins WHERE user_id = ?", (user_id,))
+    conn.commit()
+    conn.close()
+
+def is_admin(user_id):
+    return user_id in get_all_admin_ids()
+
+def is_main_admin(username):
+    return username and username.lower() == MAIN_ADMIN_USERNAME.lower()
+
+def add_pending_admin(username):
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("INSERT OR IGNORE INTO pending_admins VALUES (?)", (username.lower(),))
+    conn.commit()
+    conn.close()
+
+def get_and_clear_pending(username):
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("SELECT 1 FROM pending_admins WHERE username = ?", (username.lower(),))
+    exists = c.fetchone()
+    if exists:
+        c.execute("DELETE FROM pending_admins WHERE username = ?", (username.lower(),))
+        conn.commit()
+    conn.close()
+    return exists is not None
+
+def save_application(user_id, username, answers):
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("INSERT INTO applications (user_id, username, status, answers, created_at) VALUES (?, ?, 'pending', ?, ?)",
+              (user_id, username, json.dumps(answers, ensure_ascii=False), datetime.now().isoformat()))
+    app_id = c.lastrowid
+    conn.commit()
+    conn.close()
+    return app_id
+
+def get_application(app_id):
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("SELECT * FROM applications WHERE id=?", (app_id,))
+    row = c.fetchone()
+    conn.close()
+    return row
+
+def get_user_applications(user_id):
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("SELECT id, status, created_at FROM applications WHERE user_id=? AND status != 'deleted' ORDER BY id DESC", (user_id,))
+    rows = c.fetchall()
+    conn.close()
+    return rows
+
+def has_pending_application(user_id):
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("SELECT 1 FROM applications WHERE user_id=? AND status='pending'", (user_id,))
+    res = c.fetchone() is not None
+    conn.close()
+    return res
+
+def get_applications_by_status(status):
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("SELECT id, user_id, username, created_at FROM applications WHERE status=? ORDER BY id DESC", (status,))
+    rows = c.fetchall()
+    conn.close()
+    return rows
+
+def add_vote(app_id, admin_id, vote):
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("INSERT OR REPLACE INTO votes VALUES (?, ?, ?)", (app_id, admin_id, vote))
+    conn.commit()
+    conn.close()
+
+def get_votes(app_id):
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("SELECT admin_id, vote FROM votes WHERE application_id=?", (app_id,))
+    votes = c.fetchall()
+    conn.close()
+    return votes
+
+def count_votes(app_id):
+    votes = get_votes(app_id)
+    acc = sum(1 for _, v in votes if v == 'accept')
+    rej = sum(1 for _, v in votes if v == 'reject')
+    return acc, rej
+
+def set_application_status(app_id, status):
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("UPDATE applications SET status=? WHERE id=?", (status, app_id))
+    conn.commit()
+    conn.close()
+
+def set_reject_reason(app_id, reason):
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("UPDATE applications SET reject_reason=? WHERE id=?", (reason, app_id))
+    conn.commit()
+    conn.close()
+
+def is_banned(user_id):
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("SELECT 1 FROM banned WHERE user_id=?", (user_id,))
+    res = c.fetchone() is not None
+    conn.close()
+    return res
+
+def ban_user(user_id, reason):
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("INSERT OR REPLACE INTO banned (user_id, reason) VALUES (?, ?)", (user_id, reason))
+    conn.commit()
+    conn.close()
+
+def unban_user(user_id):
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("DELETE FROM banned WHERE user_id=?", (user_id,))
+    conn.commit()
+    conn.close()
+
+def get_banned_users():
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("SELECT b.user_id, u.username, b.reason FROM banned b LEFT JOIN users u ON b.user_id = u.user_id")
+    rows = c.fetchall()
+    conn.close()
+    return rows
+
+def add_user(user_id, username):
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("INSERT OR IGNORE INTO users (user_id, username) VALUES (?, ?)", (user_id, username))
+    conn.commit()
+    conn.close()
+
+def get_all_user_ids():
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("SELECT user_id FROM users")
+    ids = [row[0] for row in c.fetchall()]
+    conn.close()
+    return ids
+
+def get_all_users():
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("SELECT user_id, username FROM users")
+    users = c.fetchall()
+    conn.close()
+    return users
+
+def get_user_count():
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("SELECT COUNT(*) FROM users")
+    count = c.fetchone()[0]
+    conn.close()
+    return count
+
+def get_ban_count():
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("SELECT COUNT(*) FROM banned")
+    count = c.fetchone()[0]
+    conn.close()
+    return count
+
+def get_admin_count():
+    return len(get_all_admin_ids())
+
+def get_app_counts():
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("SELECT status, COUNT(*) FROM applications GROUP BY status")
+    rows = c.fetchall()
+    conn.close()
+    counts = {"pending":0,"accepted":0,"rejected":0,"deleted":0}
+    for status, cnt in rows:
+        if status in counts:
+            counts[status] = cnt
+    return counts
+
+def is_applications_open():
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("SELECT value FROM settings WHERE key='applications_open'")
+    row = c.fetchone()
+    open_flag = row and row[0] == '1'
+    c.execute("SELECT value FROM settings WHERE key='scheduled_open_time'")
+    sched = c.fetchone()
+    conn.close()
+    if sched:
+        try:
+            open_time = datetime.fromisoformat(sched[0])
+            if datetime.now() >= open_time:
+                set_applications_open(True)
+                clear_scheduled_open()
+                return True
+            else:
+                return False
+        except:
+            pass
+    return open_flag
+
+def set_applications_open(open: bool):
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("UPDATE settings SET value=? WHERE key='applications_open'", ('1' if open else '0',))
+    conn.commit()
+    conn.close()
+
+def schedule_reopen(seconds: int):
+    set_applications_open(False)
+    reopen_time = datetime.now() + timedelta(seconds=seconds)
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("INSERT OR REPLACE INTO settings (key, value) VALUES ('scheduled_open_time', ?)", (reopen_time.isoformat(),))
+    conn.commit()
+    conn.close()
+
+def clear_scheduled_open():
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("DELETE FROM settings WHERE key='scheduled_open_time'")
+    conn.commit()
+    conn.close()
+
+MENU_BUTTONS = {
+    "📋 Мои заявки", "📋 Все заявки", "✅ Принятые", "❌ Отклонённые",
+    "🗑 Удалённые заявки", "🚫 Забаненные", "📖 Команды", "📝 Пройти тест",
+    "🔒 Закрыть подачу заявок", "🔓 Открыть подачу заявок", "⏱ Закрыть на время"
+}
+
+def main_keyboard(user_id, username=None):
+    if is_admin(user_id):
+        buttons = [
+            [KeyboardButton("📋 Все заявки"), KeyboardButton("✅ Принятые"), KeyboardButton("❌ Отклонённые")],
+            [KeyboardButton("🗑 Удалённые заявки")],
+        ]
+        if is_applications_open():
+            buttons.append([KeyboardButton("🔒 Закрыть подачу заявок"), KeyboardButton("⏱ Закрыть на время")])
+        else:
+            buttons.append([KeyboardButton("🔓 Открыть подачу заявок")])
+        buttons.append([KeyboardButton("🚫 Забаненные")])
+        buttons.append([KeyboardButton("📖 Команды")])
+        buttons.append([KeyboardButton("📝 Пройти тест")])
+    else:
+        buttons = [
+            [KeyboardButton("📋 Мои заявки")],
+            [KeyboardButton("📖 Команды")],
+            [KeyboardButton("📝 Пройти тест")]
+        ]
+    return ReplyKeyboardMarkup(buttons, resize_keyboard=True)
+
+def clear_all_pending(user_id: int):
+    pending_reason.pop(user_id, None)
+    pending_ban.pop(user_id, None)
+    pending_delete.pop(user_id, None)
+    pending_broadcast.discard(user_id)
+
+# ---------- Обработчики команд ----------
+async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    add_user(user.id, user.username or "unknown")
+    if user.username and get_and_clear_pending(user.username):
+        add_admin_to_db(user.id, user.username)
+        await update.message.reply_text("✅ Вы были добавлены как администратор!")
+    if not get_all_admin_ids() and user.username and is_main_admin(user.username):
+        add_admin_to_db(user.id, user.username)
+        await update.message.reply_text("👑 Вы главный администратор TDXT!")
+    await update.message.reply_text(
+        "👋 Добро пожаловать в официального бота TDXT | Защита башни x туалет!\n"
+        "Используйте кнопки ниже.\n"
+        "Для списка команд нажмите /help",
+        reply_markup=main_keyboard(user.id, user.username)
+    )
+
+async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    is_adm = is_admin(user.id)
+    is_main = is_main_admin(user.username)
+    text = "📖 <b>Список команд:</b>\n\n"
+    text += "/test – Подать заявку\n"
+    text += "/help – Показать этот список\n"
+    if is_adm:
+        text += "/stats – Статистика бота\n"
+        text += "/users – Список всех пользователей\n"
+        text += "/ban @username – Забанить пользователя\n"
+        text += "/unban @username – Разбанить пользователя\n"
+        text += "/deleteapp ID – Удалить заявку\n"
+        text += "/broadcast – Рассылка всем пользователям\n"
+        text += "/openapps – Открыть приём заявок\n"
+        text += "/closeapps – Закрыть приём заявок\n"
+    if is_main:
+        text += "/addadmin @username – Добавить админа (только главный)\n"
+        text += "/removeadmin @username – Удалить админа (только главный)\n"
+    await update.message.reply_text(text, parse_mode="HTML")
+
+async def commands_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await cmd_help(update, context)
+
+async def cmd_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_admin(update.effective_user.id):
+        await update.message.reply_text("⛔ Только администратор.")
+        return
+    users = get_user_count()
+    admins = get_admin_count()
+    bans = get_ban_count()
+    counts = get_app_counts()
+    text = (
+        f"📊 <b>Статистика бота</b>\n"
+        f"👥 Пользователей: {users}\n"
+        f"👑 Администраторов: {admins}\n"
+        f"🚫 Забанено: {bans}\n\n"
+        f"📋 Заявки:\n"
+        f"  ⏳ Ожидают: {counts['pending']}\n"
+        f"  ✅ Принято: {counts['accepted']}\n"
+        f"  ❌ Отклонено: {counts['rejected']}\n"
+        f"  🗑 Удалено: {counts['deleted']}"
+    )
+    await update.message.reply_text(text, parse_mode="HTML")
+
+async def cmd_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_admin(update.effective_user.id):
+        await update.message.reply_text("⛔ Только администратор.")
+        return
+    users = get_all_users()
+    if not users:
+        await update.message.reply_text("👥 В боте ещё нет зарегистрированных пользователей.")
+        return
+    text = "👥 <b>Список пользователей:</b>\n"
+    for i, (user_id, username) in enumerate(users, 1):
+        name = f"@{username}" if username else f"ID:{user_id}"
+        text += f"{i}. {name} (ID: {user_id})\n"
+    if len(text) > 4096:
+        for part in [text[i:i+4096] for i in range(0, len(text), 4096)]:
+            await update.message.reply_text(part, parse_mode="HTML")
+    else:
+        await update.message.reply_text(text, parse_mode="HTML")
+
+async def cmd_ban(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_admin(update.effective_user.id):
+        await update.message.reply_text("⛔ Только администратор.")
+        return
+    if not context.args:
+        await update.message.reply_text("Использование: /ban @username")
+        return
+    username = context.args[0].lstrip("@").lower()
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("SELECT user_id FROM users WHERE username=?", (username,))
+    row = c.fetchone()
+    conn.close()
+    if not row:
+        await update.message.reply_text("Пользователь не найден в базе.")
+        return
+    target_user = row[0]
+    if is_banned(target_user):
+        await update.message.reply_text("Пользователь уже забанен.")
+        return
+    pending_ban[update.effective_user.id] = target_user
+    await update.message.reply_text("Введите причину бана (следующим сообщением).")
+
+async def cmd_unban(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_admin(update.effective_user.id):
+        await update.message.reply_text("⛔ Только администратор.")
+        return
+    if not context.args:
+        await update.message.reply_text("Использование: /unban @username")
+        return
+    username = context.args[0].lstrip("@").lower()
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("SELECT user_id FROM users WHERE username=?", (username,))
+    row = c.fetchone()
+    conn.close()
+    if not row:
+        await update.message.reply_text("Пользователь не найден в базе.")
+        return
+    target_user = row[0]
+    if not is_banned(target_user):
+        await update.message.reply_text("Пользователь не забанен.")
+        return
+    unban_user(target_user)
+    await update.message.reply_text(f"✅ Пользователь @{username} разбанен.")
+
+async def cmd_deleteapp(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_admin(update.effective_user.id):
+        await update.message.reply_text("⛔ Только администратор.")
+        return
+    if not context.args:
+        await update.message.reply_text("Использование: /deleteapp <ID заявки>")
+        return
+    try:
+        app_id = int(context.args[0])
+    except ValueError:
+        await update.message.reply_text("Некорректный ID заявки.")
+        return
+    app = get_application(app_id)
+    if not app:
+        await update.message.reply_text("Заявка не найдена.")
+        return
+    if app[3] == "deleted":
+        await update.message.reply_text("Заявка уже удалена.")
+        return
+    pending_delete[update.effective_user.id] = app_id
+    await update.message.reply_text("Введите причину удаления заявки (следующим сообщением).")
+
+async def cmd_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_admin(update.effective_user.id):
+        await update.message.reply_text("⛔ Только администратор.")
+        return
+    pending_broadcast.add(update.effective_user.id)
+    await update.message.reply_text("📢 Введите текст для рассылки всем пользователям:")
+
+async def cmd_openapps(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_admin(update.effective_user.id):
+        await update.message.reply_text("⛔ Только администратор.")
+        return
+    clear_scheduled_open()
+    set_applications_open(True)
+    msg_text = "🔓 Приём заявок снова открыт! Ждём ваши анкеты! 🎉"
+    users = get_all_user_ids()
+    count = 0
+    for uid in users:
+        try:
+            await context.bot.send_message(chat_id=uid, text=msg_text)
+            count += 1
+        except:
+            pass
+    await update.message.reply_text(f"✅ Приём заявок открыт. Уведомление отправлено {count} пользователям.",
+                                    reply_markup=main_keyboard(update.effective_user.id, update.effective_user.username))
+
+async def cmd_closeapps(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_admin(update.effective_user.id):
+        await update.message.reply_text("⛔ Только администратор.")
+        return
+    clear_scheduled_open()
+    set_applications_open(False)
+    msg_text = "🔒 Внимание! Приём заявок временно приостановлен. Мы скоро вернёмся! 🛑"
+    users = get_all_user_ids()
+    count = 0
+    for uid in users:
+        try:
+            await context.bot.send_message(chat_id=uid, text=msg_text)
+            count += 1
+        except:
+            pass
+    await update.message.reply_text(f"✅ Приём заявок закрыт. Уведомление отправлено {count} пользователям.",
+                                    reply_markup=main_keyboard(update.effective_user.id, update.effective_user.username))
+
+async def my_applications(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    clear_all_pending(update.effective_user.id)
+    user = update.effective_user
+    apps = get_user_applications(user.id)
+    if not apps:
+        await update.message.reply_text("У вас пока нет заявок.")
+        return
+    text = "📋 <b>Ваши заявки:</b>\n\n"
+    for app in apps:
+        app_id, status, created = app
+        emoji = {"pending": "⏳", "accepted": "✅", "rejected": "❌", "deleted": "🗑"}.get(status, "")
+        text += f"#{app_id} — {emoji} {status}\n📅 {created[:10]}\n\n"
+    await update.message.reply_text(text, parse_mode="HTML")
+
+async def start_test(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_applications_open():
+        await update.message.reply_text("🔒 Приём заявок временно закрыт. Попробуйте позже.")
+        return ConversationHandler.END
+    if is_banned(update.effective_user.id):
+        await update.message.reply_text("🚫 Вы заблокированы и не можете подавать заявки.")
+        return ConversationHandler.END
+    if has_pending_application(update.effective_user.id):
+        await update.message.reply_text("У вас уже есть ожидающая заявка. Дождитесь решения администрации.")
+        return ConversationHandler.END
+    await update.message.reply_text("Начинаем тест 📝\nВопрос 1/12")
+    await update.message.reply_text(QUESTIONS[0])
+    return Q1
+
+async def handle_q1(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data['answers'] = [update.message.text]
+    await update.message.reply_text(QUESTIONS[1])
+    return Q2
+async def handle_q2(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data['answers'].append(update.message.text)
+    await update.message.reply_text(QUESTIONS[2])
+    return Q3
+async def handle_q3(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data['answers'].append(update.message.text)
+    await update.message.reply_text(QUESTIONS[3])
+    return Q4
+async def handle_q4(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data['answers'].append(update.message.text)
+    await update.message.reply_text(QUESTIONS[4])
+    return Q5
+async def handle_q5(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data['answers'].append(update.message.text)
+    await update.message.reply_text(QUESTIONS[5])
+    return Q6
+async def handle_q6(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data['answers'].append(update.message.text)
+    await update.message.reply_text(QUESTIONS[6])
+    return Q7
+async def handle_q7(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data['answers'].append(update.message.text)
+    await update.message.reply_text(QUESTIONS[7])
+    return Q8
+async def handle_q8(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data['answers'].append(update.message.text)
+    await update.message.reply_text(QUESTIONS[8])
+    return Q9
+async def handle_q9(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data['answers'].append(update.message.text)
+    await update.message.reply_text(QUESTIONS[9])
+    return Q10
+async def handle_q10(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data['answers'].append(update.message.text)
+    await update.message.reply_text(QUESTIONS[10])
+    return Q11
+async def handle_q11(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data['answers'].append(update.message.text)
+    await update.message.reply_text(QUESTIONS[11])
+    return Q12
+async def handle_q12(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    answers = context.user_data['answers'] + [update.message.text]
+    user = update.effective_user
+    app_id = save_application(user.id, user.username or "unknown", answers)
+    await update.message.reply_text(
+        "✅ <b>Ваша заявка принята!</b>\n"
+        "Администраторы рассмотрят её в ближайшее время.\n"
+        f"Номер заявки: #{app_id}",
+        parse_mode="HTML"
+    )
+    await update.message.reply_text("Вы можете продолжить, используя меню.", reply_markup=main_keyboard(user.id, user.username))
+    return ConversationHandler.END
+
+async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    clear_all_pending(update.effective_user.id)
+    await update.message.reply_text("Тест отменён.", reply_markup=main_keyboard(update.effective_user.id, update.effective_user.username))
+    return ConversationHandler.END
+
+async def all_apps_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    clear_all_pending(update.effective_user.id)
+    await show_applications_by_status(update, "pending")
+
+async def accepted_apps_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    clear_all_pending(update.effective_user.id)
+    await show_applications_by_status(update, "accepted")
+
+async def rejected_apps_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    clear_all_pending(update.effective_user.id)
+    await show_applications_by_status(update, "rejected")
+
+async def deleted_apps_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    clear_all_pending(update.effective_user.id)
+    if not is_admin(update.effective_user.id):
+        await update.message.reply_text("⛔ Только для администраторов.")
+        return
+    await show_applications_by_status(update, "deleted")
+
+async def banned_users_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    clear_all_pending(update.effective_user.id)
+    if not is_admin(update.effective_user.id):
+        await update.message.reply_text("⛔ Только администратор.")
+        return
+    banned = get_banned_users()
+    if not banned:
+        await update.message.reply_text("Нет забаненных пользователей.")
+        return
+    text = "🚫 <b>Забаненные пользователи:</b>\n"
+    buttons = []
+    for user_id, username, reason in banned:
+        name = f"@{username}" if username else f"ID:{user_id}"
+        buttons.append([InlineKeyboardButton(f"Разбанить {name}", callback_data=f"unban_{user_id}")])
+    await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(buttons), parse_mode="HTML")
+
+async def toggle_applications(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    clear_all_pending(update.effective_user.id)
+    if not is_admin(update.effective_user.id):
+        await update.message.reply_text("⛔ Только администратор.")
+        return
+    clear_scheduled_open()
+    was_open = is_applications_open()
+    set_applications_open(not was_open)
+    now_open = not was_open
+    if now_open:
+        msg_text = "🔓 Приём заявок снова открыт! Ждём ваши анкеты! 🎉"
+    else:
+        msg_text = "🔒 Внимание! Приём заявок временно приостановлен. Мы скоро вернёмся! 🛑"
+    users = get_all_user_ids()
+    count = 0
+    for uid in users:
+        try:
+            await context.bot.send_message(chat_id=uid, text=msg_text)
+            count += 1
+        except Exception as e:
+            logging.warning(f"Не удалось отправить уведомление {uid}: {e}")
+    await update.message.reply_text(f"✅ Режим подачи заявок изменён. Уведомление отправлено {count} пользователям.",
+                                    reply_markup=main_keyboard(update.effective_user.id, update.effective_user.username))
+
+async def close_timed_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    clear_all_pending(update.effective_user.id)
+    if not is_admin(update.effective_user.id):
+        await update.message.reply_text("⛔ Только администратор.")
+        return
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("🕐 1 час", callback_data="close_time_3600")],
+        [InlineKeyboardButton("🕑 3 часа", callback_data="close_time_10800")],
+        [InlineKeyboardButton("🕓 6 часов", callback_data="close_time_21600")],
+        [InlineKeyboardButton("🕛 12 часов", callback_data="close_time_43200")],
+        [InlineKeyboardButton("🕟 24 часа (1 день)", callback_data="close_time_86400")],
+        [InlineKeyboardButton("Отмена", callback_data="close_time_cancel")]
+    ])
+    await update.message.reply_text("⏱ Выберите срок закрытия приёма заявок:", reply_markup=keyboard)
+
+async def close_time_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    if not is_admin(query.from_user.id):
+        await query.answer("⛔ Только администратор.", show_alert=True)
+        return
+    data = query.data
+    if data == "close_time_cancel":
+        await query.edit_message_text("⏱ Закрытие на время отменено.")
+        return
+    seconds = int(data.split("_")[-1])
+    schedule_reopen(seconds)
+    reopen_time = datetime.now() + timedelta(seconds=seconds)
+    await query.edit_message_text(
+        f"🔒 Приём заявок закрыт на {seconds//3600} ч. и откроется автоматически в {reopen_time.strftime('%H:%M')}."
+    )
+    users = get_all_user_ids()
+    for uid in users:
+        try:
+            await context.bot.send_message(
+                chat_id=uid,
+                text=f"🔒 Внимание! Приём заявок временно закрыт до {reopen_time.strftime('%H:%M')}."
+            )
+        except:
+            pass
+
+async def open_app_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    admin = query.from_user
+    if not is_admin(admin.id):
+        await query.answer("⛔ Нет доступа", show_alert=True)
+        return
+    app_id = int(query.data.split("_")[-1])
+    app = get_application(app_id)
+    if not app:
+        await query.edit_message_text("Заявка не найдена.")
+        return
+    _, user_id, username, status, answers_json, created, reason = app
+    answers = json.loads(answers_json)
+    text = f"📩 <b>Заявка #{app_id}</b>\n"
+    text += f"👤 @{username} (ID: {user_id})\n"
+    text += f"Статус: {status}\n📅 {created[:10]}\n"
+    if reason:
+        text += f"Причина: {reason}\n"
+    text += "\n"
+    for i, (q, a) in enumerate(zip(QUESTIONS, answers), 1):
+        text += f"<b>{q}</b>\n➡️ {a}\n\n"
+
+    buttons = []
+    if status == "pending":
+        acc, rej = count_votes(app_id)
+        buttons.append([
+            InlineKeyboardButton(f"✅ Принять ({acc})", callback_data=f"accept_{app_id}"),
+            InlineKeyboardButton(f"❌ Отклонить ({rej})", callback_data=f"reject_{app_id}")
+        ])
+    if is_admin(admin.id):
+        buttons.append([InlineKeyboardButton("💬 Связаться с заявителем", callback_data=f"chat_{user_id}")])
+        if is_banned(user_id):
+            buttons.append([InlineKeyboardButton("✅ Разбанить пользователя", callback_data=f"unban_{user_id}")])
+        else:
+            buttons.append([InlineKeyboardButton("🚫 Забанить пользователя", callback_data=f"ban_{user_id}")])
+        buttons.append([InlineKeyboardButton("🗑 Удалить заявку", callback_data=f"delapp_{app_id}")])
+    buttons.append([InlineKeyboardButton("🔙 Назад к списку", callback_data=f"admin_list_{status}")])
+    await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(buttons), parse_mode="HTML")
+
+async def vote_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    admin_id = query.from_user.id
+    if not is_admin(admin_id):
+        await query.answer("⛔ Вы не администратор.", show_alert=True)
+        return
+    data = query.data
+    action, app_id_str = data.split("_")
+    app_id = int(app_id_str)
+    app = get_application(app_id)
+    if not app or app[3] != "pending":
+        await query.edit_message_text("Заявка уже обработана.")
+        return
+    vote = action
+    add_vote(app_id, admin_id, vote)
+    accepts, rejects = count_votes(app_id)
+    if accepts >= ACCEPT_THRESHOLD:
+        set_application_status(app_id, "accepted")
+        await query.edit_message_text(f"✅ Заявка #{app_id} принята (голосов за: {accepts}).")
+        app = get_application(app_id)
+        if app:
+            user_id = app[1]
+            try:
+                await context.bot.send_message(
+                    chat_id=user_id,
+                    text="🎉 <b>Поздравляю!</b>\nВы теперь официально партнёр в <b>TDXT | Защита башни x туалет</b>!\n\n🔗 Вступайте в чат: https://t.me/+k1iuZTvjHT03OWFi",
+                    parse_mode="HTML"
+                )
+            except:
+                pass
+    elif rejects >= REJECT_THRESHOLD:
+        set_application_status(app_id, "rejected")
+        pending_reason[admin_id] = app_id
+        await query.edit_message_text(
+            f"❌ Заявка #{app_id} отклонена (голосов против: {rejects}).\n\n"
+            "<b>Напишите причину отказа (следующим сообщением):</b>\n"
+            "Для отмены нажмите любую кнопку меню.",
+            parse_mode="HTML"
+        )
+    else:
+        await query.edit_message_reply_markup(
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton(f"✅ Принять ({accepts})", callback_data=f"accept_{app_id}"),
+                InlineKeyboardButton(f"❌ Отклонить ({rejects})", callback_data=f"reject_{app_id}")
+            ]])
+        )
+
+async def ban_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    if not is_admin(query.from_user.id):
+        await query.answer("⛔ Только администратор.", show_alert=True)
+        return
+    parts = query.data.split("_")
+    target_user = int(parts[-1])
+    pending_ban[query.from_user.id] = target_user
+    await query.edit_message_text(
+        f"🚫 Вы собираетесь забанить пользователя (ID: {target_user}).\nНапишите причину бана (следующим сообщением).\nДля отмены нажмите кнопку меню."
+    )
+
+async def unban_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    if not is_admin(query.from_user.id):
+        await query.answer("⛔ Только администратор.", show_alert=True)
+        return
+    parts = query.data.split("_")
+    target_user = int(parts[-1])
+    unban_user(target_user)
+    username = None
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("SELECT username FROM users WHERE user_id=?", (target_user,))
+    row = c.fetchone()
+    if row:
+        username = row[0]
+    conn.close()
+    name = f"@{username}" if username else f"ID:{target_user}"
+    await query.edit_message_text(f"✅ Пользователь {name} разбанен.")
+
+async def delete_app_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    if not is_admin(query.from_user.id):
+        await query.answer("⛔ Только администратор.", show_alert=True)
+        return
+    parts = query.data.split("_")
+    app_id = int(parts[-1])
+    pending_delete[query.from_user.id] = app_id
+    await query.edit_message_text(
+        f"🗑 Вы собираетесь удалить заявку #{app_id}.\nНапишите причину удаления (следующим сообщением).\nДля отмены нажмите кнопку меню."
+    )
+
+async def chat_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    admin_id = query.from_user.id
+    if not is_admin(admin_id):
+        await query.answer("⛔ Только администратор.", show_alert=True)
+        return
+    if admin_id in active_chat:
+        await query.answer("Вы уже находитесь в чате с другим пользователем.", show_alert=True)
+        return
+    target_user = int(query.data.split("_")[1])
+    if target_user in chat_partner:
+        await query.answer("С этим пользователем уже общается другой администратор.", show_alert=True)
+        return
+    active_chat[admin_id] = target_user
+    chat_partner[target_user] = admin_id
+    keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("❌ Завершить чат", callback_data="end_chat")]])
+    await query.edit_message_text(
+        f"💬 Вы начали чат с пользователем ID:{target_user}.\n"
+        "Все ваши следующие сообщения будут пересылаться ему.\n"
+        "Для завершения нажмите кнопку ниже.",
+        reply_markup=keyboard
+    )
+    try:
+        await context.bot.send_message(
+            chat_id=target_user,
+            text="💬 С вами связался администратор. Можете отвечать на это сообщение."
+        )
+    except:
+        await query.message.reply_text("⚠️ Не удалось уведомить пользователя.")
+
+async def end_chat_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    admin_id = query.from_user.id
+    if admin_id not in active_chat:
+        await query.answer("Вы не в чате.", show_alert=True)
+        return
+    user_id = active_chat.pop(admin_id)
+    chat_partner.pop(user_id, None)
+    await query.edit_message_text("🔒 Чат завершён.")
+    try:
+        await context.bot.send_message(chat_id=user_id, text="🔒 Администратор завершил чат.")
+    except:
+        pass
+    try:
+        await context.bot.send_message(
+            chat_id=admin_id,
+            text="Вы вернулись в обычный режим.",
+            reply_markup=main_keyboard(admin_id)
+        )
+    except:
+        pass
+
+async def handle_chat_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    if user.id in active_chat:
+        target = active_chat[user.id]
+        try:
+            await context.bot.send_message(chat_id=target, text=f"Сообщение от администратора:\n{update.message.text}")
+        except:
+            await update.message.reply_text("⚠️ Не удалось отправить сообщение.")
+        return
+    if user.id in chat_partner:
+        target = chat_partner[user.id]
+        try:
+            await context.bot.send_message(chat_id=target, text=f"Сообщение от пользователя @{user.username or user.id}:\n{update.message.text}")
+        except:
+            await update.message.reply_text("⚠️ Администратор сейчас недоступен.")
+        return
+
+async def handle_admin_username_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    action = context.user_data.get('action')
+    if not action:
+        return False
+    text = update.message.text.strip()
+    if text in MENU_BUTTONS:
+        clear_all_pending(update.effective_user.id)
+        return False
+    username = text.lstrip("@")
+    if not username:
+        await update.message.reply_text("Некорректный формат. Введите @username:")
+        return True
+    if action == 'add_admin':
+        if not is_main_admin(update.effective_user.username):
+            await update.message.reply_text("⛔ Только главный администратор может добавлять админов.")
+            clear_all_pending(update.effective_user.id)
+            return True
+        conn = get_db()
+        c = conn.cursor()
+        c.execute("SELECT user_id FROM admins WHERE username=?", (username.lower(),))
+        exists = c.fetchone()
+        conn.close()
+        if exists:
+            await update.message.reply_text("ℹ️ Этот пользователь уже администратор.")
+        else:
+            add_pending_admin(username)
+            await update.message.reply_text(f"✅ @{username} добавлен в список ожидания. Попросите его запустить /start.")
+        clear_all_pending(update.effective_user.id)
+        return True
+    elif action == 'remove_admin':
+        if not is_main_admin(update.effective_user.username):
+            await update.message.reply_text("⛔ Только главный администратор может удалять админов.")
+            clear_all_pending(update.effective_user.id)
+            return True
+        conn = get_db()
+        c = conn.cursor()
+        c.execute("SELECT user_id FROM admins WHERE username=?", (username.lower(),))
+        row = c.fetchone()
+        if row:
+            remove_admin_from_db(row[0])
+            await update.message.reply_text(f"❌ @{username} удалён из администраторов.")
+        else:
+            await update.message.reply_text("ℹ️ Такой администратор не найден.")
+        conn.close()
+        clear_all_pending(update.effective_user.id)
+        return True
+    return True
+
+async def handle_reject_reason_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    if user_id not in pending_reason:
+        return False
+    text = update.message.text.strip()
+    if text in MENU_BUTTONS:
+        del pending_reason[user_id]
+        return False
+    app_id = pending_reason.pop(user_id)
+    set_reject_reason(app_id, text)
+    app = get_application(app_id)
+    if app:
+        applicant_id = app[1]
+        try:
+            await context.bot.send_message(
+                chat_id=applicant_id,
+                text=f"😔 <b>Вам отказали.</b>\nПричина: {text}\nПопробуйте позже.",
+                parse_mode="HTML"
+            )
+        except:
+            pass
+    await update.message.reply_text("✅ Причина отказа сохранена и отправлена заявителю.")
+    return True
+
+async def handle_ban_reason_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    if user_id not in pending_ban:
+        return False
+    text = update.message.text.strip()
+    if text in MENU_BUTTONS:
+        del pending_ban[user_id]
+        return False
+    target_user = pending_ban.pop(user_id)
+    ban_user(target_user, text)
+    await update.message.reply_text(f"🚫 Пользователь заблокирован. Причина: {text}")
+    try:
+        await context.bot.send_message(chat_id=target_user, text=f"🚫 Вы были забанены администрацией. Причина: {text}")
+    except:
+        pass
+    return True
+
+async def handle_delete_reason_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    if user_id not in pending_delete:
+        return False
+    text = update.message.text.strip()
+    if text in MENU_BUTTONS:
+        del pending_delete[user_id]
+        return False
+    app_id = pending_delete.pop(user_id)
+    set_application_status(app_id, "deleted")
+    set_reject_reason(app_id, text)
+    app = get_application(app_id)
+    if app:
+        applicant_id = app[1]
+        try:
+            await context.bot.send_message(
+                chat_id=applicant_id,
+                text=f"🗑 Ваша заявка #{app_id} была удалена администрацией. Причина: {text}",
+                parse_mode="HTML"
+            )
+        except:
+            pass
+    await update.message.reply_text("✅ Заявка удалена.")
+    return True
+
+async def handle_broadcast_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    if user_id not in pending_broadcast:
+        return False
+    text = update.message.text.strip()
+    if text in MENU_BUTTONS:
+        pending_broadcast.discard(user_id)
+        return False
+    pending_broadcast.discard(user_id)
+    users = get_all_user_ids()
+    count = 0
+    for uid in users:
+        try:
+            await context.bot.send_message(chat_id=uid, text=text)
+            count += 1
+        except Exception as e:
+            logging.warning(f"Не удалось отправить сообщение {uid}: {e}")
+    await update.message.reply_text(f"✅ Рассылка завершена. Сообщение отправлено {count} пользователям.")
+    return True
+
+async def show_applications_by_status(update: Update, status: str):
+    apps = get_applications_by_status(status)
+    status_names = {"pending": "ожидающих", "accepted": "принятых", "rejected": "отклонённых", "deleted": "удалённых"}
+    title = status_names.get(status, status)
+    if not apps:
+        text = f"Заявок со статусом «{title}» нет."
+        if update.callback_query:
+            await update.callback_query.edit_message_text(text)
+        else:
+            await update.message.reply_text(text)
+        return
+    text = f"📋 <b>Список {title} заявок</b>\nВсего: {len(apps)}"
+    buttons = []
+    for app in apps:
+        app_id, uid, username, created = app
+        buttons.append([InlineKeyboardButton(f"📄 Заявка #{app_id} от @{username}", callback_data=f"open_app_{app_id}")])
+    reply_markup = InlineKeyboardMarkup(buttons)
+    if update.callback_query:
+        await update.callback_query.edit_message_text(text, reply_markup=reply_markup, parse_mode="HTML")
+    else:
+        await update.message.reply_text(text, reply_markup=reply_markup, parse_mode="HTML")
+
+# ---------- Управление ботом ----------
 is_running = False
 application = None
 polling_task = None
