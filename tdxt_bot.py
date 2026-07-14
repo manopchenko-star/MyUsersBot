@@ -1,21 +1,26 @@
-import asyncio, sqlite3, os, logging, json
+import asyncio, sqlite3, os, logging, json, aiohttp
 from datetime import datetime, timedelta
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton
-from telegram.ext import (
-    Application,
-    CommandHandler,
-    MessageHandler,
-    CallbackQueryHandler,
-    ConversationHandler,
-    filters,
-    ContextTypes,
-)
+from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, ConversationHandler, filters, ContextTypes
 
+# Только эти два токена берутся из переменных окружения Render
 BOT_TOKEN = os.environ.get("TDXT_BOT_TOKEN", "")
+GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN", "")
+
+# ------------------ НАСТРОЙКИ (вшиты) ------------------
 MAIN_ADMIN_USERNAME = "Anopchenko2011"
 ACCEPT_THRESHOLD = 1
 REJECT_THRESHOLD = 1
 DATABASE = "tdxt_bot.db"
+
+# AI moderation (gpt-4o-mini)
+AI_API_URL = "https://models.inference.ai.azure.com/chat/completions"
+AI_MODEL = "gpt-4o-mini"
+AI_MAX_TOKENS = 200
+AI_TEMPERATURE = 0.7
+AI_SYSTEM_PROMPT = "Ты — помощник, анализирующий заявки на партнёрство."
+# --------------------------------------------------------
+
 Q1, Q2, Q3, Q4, Q5, Q6, Q7, Q8, Q9, Q10, Q11, Q12 = range(12)
 
 QUESTIONS = [
@@ -39,6 +44,7 @@ pending_reason = {}
 pending_ban = {}
 pending_delete = {}
 pending_broadcast = set()
+ai_review_enabled = False
 
 def get_db():
     return sqlite3.connect(DATABASE, check_same_thread=False)
@@ -62,6 +68,16 @@ def init_db():
     c.execute('''CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT)''')
     c.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('applications_open', '1')")
     c.execute("INSERT OR IGNORE INTO pending_admins (username) VALUES ('clennidze')")
+    c.execute('''CREATE TABLE IF NOT EXISTS ai_reviews (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        app_id INTEGER UNIQUE,
+        decision TEXT NOT NULL,
+        reason TEXT NOT NULL,
+        status TEXT DEFAULT 'pending',
+        reviewed_by INTEGER,
+        reviewed_at TEXT,
+        FOREIGN KEY (app_id) REFERENCES applications(id)
+    )''')
     conn.commit()
     conn.close()
 
@@ -317,10 +333,120 @@ def clear_scheduled_open():
     conn.commit()
     conn.close()
 
+# ------------------ AI review DB functions ------------------
+def get_pending_ai_reviews():
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("SELECT r.id, r.app_id, r.decision, r.reason, a.user_id, a.username FROM ai_reviews r JOIN applications a ON r.app_id = a.id WHERE r.status = 'pending' ORDER BY r.id")
+    rows = c.fetchall()
+    conn.close()
+    return rows
+
+def has_ai_review(app_id):
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("SELECT 1 FROM ai_reviews WHERE app_id = ?", (app_id,))
+    exists = c.fetchone() is not None
+    conn.close()
+    return exists
+
+def save_ai_review(app_id, decision, reason):
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("INSERT OR IGNORE INTO ai_reviews (app_id, decision, reason) VALUES (?, ?, ?)",
+              (app_id, decision, reason))
+    conn.commit()
+    conn.close()
+
+def confirm_ai_review(review_id, admin_id):
+    conn = get_db()
+    c = conn.cursor()
+    now = datetime.now().isoformat()
+    c.execute("UPDATE ai_reviews SET status = 'confirmed', reviewed_by = ?, reviewed_at = ? WHERE id = ?",
+              (admin_id, now, review_id))
+    conn.commit()
+    conn.close()
+
+def reject_ai_review(review_id):
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("UPDATE ai_reviews SET status = 'rejected' WHERE id = ?", (review_id,))
+    conn.commit()
+    conn.close()
+
+def get_ai_review_by_id(review_id):
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("SELECT * FROM ai_reviews WHERE id = ?", (review_id,))
+    row = c.fetchone()
+    conn.close()
+    return row
+
+async def ask_ai(prompt: str):
+    if not GITHUB_TOKEN:
+        return None, "❌ Не задан GITHUB_TOKEN"
+    headers = {
+        "Authorization": f"Bearer {GITHUB_TOKEN}",
+        "Content-Type": "application/json"
+    }
+    payload = {
+        "model": AI_MODEL,
+        "messages": [
+            {"role": "system", "content": AI_SYSTEM_PROMPT},
+            {"role": "user", "content": prompt}
+        ],
+        "max_tokens": AI_MAX_TOKENS,
+        "temperature": AI_TEMPERATURE
+    }
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(AI_API_URL, json=payload, headers=headers, timeout=30) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    answer = data["choices"][0]["message"]["content"]
+                    return answer, None
+                else:
+                    return None, f"Ошибка AI: {resp.status}"
+    except Exception as e:
+        return None, f"Сетевая ошибка: {e}"
+
+async def analyze_application(app_id):
+    app = get_application(app_id)
+    if not app or app[3] != "pending":
+        return
+    if has_ai_review(app_id):
+        return
+    answers = json.loads(app[4])
+    qa_text = ""
+    for i, (q, a) in enumerate(zip(QUESTIONS, answers), 1):
+        qa_text += f"Вопрос {i}: {q}\nОтвет: {a}\n\n"
+    prompt = f"""Проанализируй заявку на партнёрство. Ниже — вопросы и ответы пользователя.
+
+{qa_text}
+На основе ответов реши, стоит ли принять заявку (accept) или отклонить (reject).
+Критерии: возраст (не менее 13 лет), адекватность, понимание обязанностей партнёра, готовность помогать проекту.
+
+Верни ТОЛЬКО валидный JSON без Markdown:
+{{"decision": "accept или reject", "reason": "краткое обоснование на русском языке"}}"""
+    answer, error = await ask_ai(prompt)
+    if error:
+        return
+    try:
+        ai_result = json.loads(answer.strip().replace("```json", "").replace("```", ""))
+        decision = ai_result.get("decision", "reject")
+        reason = ai_result.get("reason", "Без обоснования")
+        if decision not in ("accept", "reject"):
+            return
+    except:
+        return
+    save_ai_review(app_id, decision, reason)
+
+# ------------------ Menu & Keyboard ------------------
 MENU_BUTTONS = {
     "📋 Мои заявки", "📋 Все заявки", "✅ Принятые", "❌ Отклонённые",
     "🗑 Удалённые заявки", "🚫 Забаненные", "📖 Команды", "📝 Пройти тест",
-    "🔒 Закрыть подачу заявок", "🔓 Открыть подачу заявок", "⏱ Закрыть на время"
+    "🔒 Закрыть подачу заявок", "🔓 Открыть подачу заявок", "⏱ Закрыть на время",
+    "🤖 AI Review"
 }
 
 def main_keyboard(user_id, username=None):
@@ -336,6 +462,8 @@ def main_keyboard(user_id, username=None):
         buttons.append([KeyboardButton("🚫 Забаненные")])
         buttons.append([KeyboardButton("📖 Команды")])
         buttons.append([KeyboardButton("📝 Пройти тест")])
+        if is_main_admin(username):
+            buttons.append([KeyboardButton("🤖 AI Review")])
     else:
         buttons = [
             [KeyboardButton("📋 Мои заявки")],
@@ -350,7 +478,7 @@ def clear_all_pending(user_id: int):
     pending_delete.pop(user_id, None)
     pending_broadcast.discard(user_id)
 
-# ---------- Обработчики команд ----------
+# ---------- Command Handlers ----------
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     add_user(user.id, user.username or "unknown")
@@ -386,6 +514,7 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if is_main:
         text += "/addadmin @username – Добавить админа (только главный)\n"
         text += "/removeadmin @username – Удалить админа (только главный)\n"
+        text += "/aireview on/off/run/list – Управление AI-модерацией заявок\n"
     await update.message.reply_text(text, parse_mode="HTML")
 
 async def commands_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -623,6 +752,8 @@ async def handle_q12(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"Номер заявки: #{app_id}",
         parse_mode="HTML"
     )
+    if ai_review_enabled:
+        asyncio.create_task(analyze_application(app_id))
     await update.message.reply_text("Вы можете продолжить, используя меню.", reply_markup=main_keyboard(user.id, user.username))
     return ConversationHandler.END
 
@@ -753,7 +884,6 @@ async def open_app_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text += "\n"
     for i, (q, a) in enumerate(zip(QUESTIONS, answers), 1):
         text += f"<b>{q}</b>\n➡️ {a}\n\n"
-
     buttons = []
     if status == "pending":
         acc, rej = count_votes(app_id)
@@ -1092,20 +1222,126 @@ async def show_applications_by_status(update: Update, status: str):
     else:
         await update.message.reply_text(text, reply_markup=reply_markup, parse_mode="HTML")
 
-# ---------- Управление ботом ----------
+# ------------------ AI Review Management ------------------
+async def ai_review_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    if not is_main_admin(user.username):
+        await update.message.reply_text("⛔ Только главный администратор.")
+        return
+    if not context.args:
+        await update.message.reply_text(
+            "Использование:\n"
+            "/aireview on — включить автоматический анализ новых заявок\n"
+            "/aireview off — выключить\n"
+            "/aireview run — проанализировать все текущие заявки\n"
+            "/aireview list — показать список решений ИИ"
+        )
+        return
+    sub = context.args[0].lower()
+    global ai_review_enabled
+    if sub == "on":
+        ai_review_enabled = True
+        await update.message.reply_text("✅ AI-модерация заявок включена. Новые заявки будут автоматически анализироваться.")
+    elif sub == "off":
+        ai_review_enabled = False
+        await update.message.reply_text("❌ AI-модерация выключена.")
+    elif sub == "run":
+        apps = get_applications_by_status("pending")
+        if not apps:
+            await update.message.reply_text("Нет ожидающих заявок.")
+            return
+        msg = await update.message.reply_text(f"🔄 Анализирую {len(apps)} заявок...")
+        for app in apps:
+            await analyze_application(app[0])
+        await msg.edit_text(f"✅ Анализ завершён. Используйте /aireview list для просмотра.")
+    elif sub == "list":
+        reviews = get_pending_ai_reviews()
+        if not reviews:
+            await update.message.reply_text("Нет нерассмотренных решений ИИ.")
+            return
+        text = "🤖 <b>Предложения ИИ по заявкам:</b>\n"
+        keyboard = []
+        for rev in reviews:
+            review_id, app_id, decision, reason, user_id, username = rev
+            name = f"@{username}" if username else f"ID:{user_id}"
+            emoji = "✅" if decision == "accept" else "❌"
+            text += f"🔹 Заявка #{app_id} ({name}) — {emoji} {decision}\n   {reason}\n\n"
+            keyboard.append([
+                InlineKeyboardButton(f"✅ Принять #{app_id}", callback_data=f"confirm_ai_{review_id}"),
+                InlineKeyboardButton(f"❌ Отменить #{app_id}", callback_data=f"reject_ai_{review_id}")
+            ])
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await update.message.reply_text(text, parse_mode="HTML", reply_markup=reply_markup)
+    else:
+        await update.message.reply_text("Неизвестная подкоманда. Используйте on/off/run/list.")
+
+async def ai_review_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.args = ["list"]
+    await ai_review_cmd(update, context)
+
+async def confirm_ai_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    admin = query.from_user
+    if not is_main_admin(admin.username):
+        await query.answer("⛔ Только главный администратор.", show_alert=True)
+        return
+    data = query.data.split("_")
+    review_id = int(data[-1])
+    review = get_ai_review_by_id(review_id)
+    if not review or review[4] != 'pending':
+        await query.edit_message_text("Решение уже обработано.")
+        return
+    app_id = review[1]
+    decision = review[2]
+    reason = review[3]
+    if decision == "accept":
+        set_application_status(app_id, "accepted")
+    else:
+        set_reject_reason(app_id, reason)
+        set_application_status(app_id, "rejected")
+    confirm_ai_review(review_id, admin.id)
+    app = get_application(app_id)
+    if app:
+        try:
+            if decision == "accept":
+                text = f"🎉 <b>Поздравляю!</b>\nВы теперь официально партнёр в <b>TDXT</b>!\nКомментарий AI: {reason}"
+            else:
+                text = f"😔 <b>Вам отказали.</b>\nПричина (анализ AI): {reason}"
+            await context.bot.send_message(chat_id=app[1], text=text, parse_mode="HTML")
+        except:
+            pass
+    await query.edit_message_text(f"✅ Решение ИИ по заявке #{app_id} применено: {decision}.")
+
+async def reject_ai_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    admin = query.from_user
+    if not is_main_admin(admin.username):
+        await query.answer("⛔ Только главный администратор.", show_alert=True)
+        return
+    data = query.data.split("_")
+    review_id = int(data[-1])
+    review = get_ai_review_by_id(review_id)
+    if not review or review[4] != 'pending':
+        await query.edit_message_text("Решение уже обработано.")
+        return
+    reject_ai_review(review_id)
+    await query.edit_message_text(f"🚫 Предложение ИИ по заявке #{review[1]} отклонено. Заявка оставлена без изменений.")
+
+# ---------- Bot management ----------
 is_running = False
 application = None
 polling_task = None
 
 async def start_tdxt():
-    global is_running, application, polling_task
+    global is_running, application, polling_task, ai_review_enabled
     if is_running: return
     if not BOT_TOKEN:
         logging.warning("TDXT_BOT_TOKEN не задан")
         return
     init_db()
     app = Application.builder().token(BOT_TOKEN).build()
-    # Регистрируем все обработчики
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_chat_message), group=-1)
     app.add_handler(MessageHandler(filters.Regex("^📋 Мои заявки$"), my_applications))
     app.add_handler(MessageHandler(filters.Regex("^📋 Все заявки$"), all_apps_button))
@@ -1117,6 +1353,7 @@ async def start_tdxt():
     app.add_handler(MessageHandler(filters.Regex("^🔒 Закрыть подачу заявок$"), toggle_applications))
     app.add_handler(MessageHandler(filters.Regex("^🔓 Открыть подачу заявок$"), toggle_applications))
     app.add_handler(MessageHandler(filters.Regex("^⏱ Закрыть на время$"), close_timed_button))
+    app.add_handler(MessageHandler(filters.Regex("^🤖 AI Review$"), ai_review_button))
     app.add_handler(CommandHandler("start", start_cmd))
     app.add_handler(CommandHandler("help", cmd_help))
     app.add_handler(CommandHandler("stats", cmd_stats))
@@ -1127,6 +1364,7 @@ async def start_tdxt():
     app.add_handler(CommandHandler("broadcast", cmd_broadcast))
     app.add_handler(CommandHandler("openapps", cmd_openapps))
     app.add_handler(CommandHandler("closeapps", cmd_closeapps))
+    app.add_handler(CommandHandler("aireview", ai_review_cmd))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_admin_username_input), group=1)
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_reject_reason_input), group=2)
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_ban_reason_input), group=3)
@@ -1166,6 +1404,8 @@ async def start_tdxt():
     app.add_handler(CallbackQueryHandler(lambda u, c: show_applications_by_status(u, "accepted"), pattern="^admin_list_accepted$"))
     app.add_handler(CallbackQueryHandler(lambda u, c: show_applications_by_status(u, "rejected"), pattern="^admin_list_rejected$"))
     app.add_handler(CallbackQueryHandler(lambda u, c: show_applications_by_status(u, "deleted"), pattern="^admin_list_deleted$"))
+    app.add_handler(CallbackQueryHandler(confirm_ai_callback, pattern=r"^confirm_ai_\d+$"))
+    app.add_handler(CallbackQueryHandler(reject_ai_callback, pattern=r"^reject_ai_\d+$"))
     await app.initialize()
     await app.start()
     polling_task = asyncio.create_task(app.updater.start_polling())
