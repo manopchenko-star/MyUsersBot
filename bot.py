@@ -31,7 +31,7 @@ OWNER_USERNAME = os.environ.get("OWNER_USERNAME", "Anopchenko2011")
 BACKUP_INTERVAL = int(os.environ.get("BACKUP_INTERVAL", "300"))
 BACKUP_KEY = os.environ.get("BACKUP_KEY", "")
 GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN", "")
-AI_MODEL = os.environ.get("GITHUB_MODEL", "gpt-4o")
+AI_MODEL = os.environ.get("GITHUB_MODEL", "gpt-4o-mini")
 AI_MAX_TOKENS = 200
 AI_TEMPERATURE = 0.7
 AI_SYSTEM_PROMPT = "Ты — дружелюбный собеседник. Отвечай кратко, разговорным стилем, без примеров и лишних объяснений. Если что-то непонятно — уточни, но не пиши эссе."
@@ -843,55 +843,6 @@ register_handlers(client1)
 if client2: register_handlers(client2)
 for client_info in extra_clients.values(): register_handlers(client_info["client"])
 
-if bot:
-    @bot.on(events.CallbackQuery)
-    async def auth_callback(event):
-        data = event.data.decode()
-        if data.startswith("approve:"):
-            token = data.split(":")[1]
-            if token in auth_tokens:
-                auth_tokens[token] = True; await event.edit("✅ Вход одобрен.", buttons=None)
-                add_log("AUTH", "Вход одобрен через бота")
-            elif token in pending_registrations:
-                info = pending_registrations.pop(token)
-                password = uuid.uuid4().hex[:8]
-                admins[info["name"]] = {"password": hash_password(password), "role": info["role"]}
-                save_admins()
-                await event.edit(f"✅ Пользователь {info['name']} добавлен как {info['role']}. Пароль: {password}", buttons=None)
-                add_log("AUTH", f"Новый пользователь {info['name']} зарегистрирован")
-        elif data.startswith("reject:"):
-            token = data.split(":")[1]
-            auth_tokens.pop(token, None)
-            if token in pending_registrations: pending_registrations.pop(token)
-            await event.edit("🚫 Вход отклонён.", buttons=None); add_log("AUTH", "Вход отклонён")
-
-    @bot.on(events.NewMessage(pattern=r'^/mute\s+(\S+)'))
-    async def bot_mute(event):
-        chat_id = int(event.pattern_match.group(1)); muted_chats.add(chat_id); save_state()
-        await event.reply("Чат заглушен."); add_log("CMD", f"Бот: мут чата {chat_id}")
-        await broadcast_state(); await backup_state()
-
-    @bot.on(events.NewMessage(pattern=r'^/unmute\s+(\S+)'))
-    async def bot_unmute(event):
-        chat_id = int(event.pattern_match.group(1)); muted_chats.discard(chat_id); save_state()
-        await event.reply("Чат размучен."); add_log("CMD", f"Бот: размут чата {chat_id}")
-        await broadcast_state(); await backup_state()
-
-    @bot.on(events.NewMessage(pattern=r'^/unmuteall'))
-    async def bot_unmuteall(event):
-        muted_chats.clear(); save_state(); await event.reply("Все чаты размучены.")
-        add_log("CMD", "Бот: сняты все муты"); await broadcast_state(); await backup_state()
-
-    @bot.on(events.NewMessage(pattern=r'^/autoreply\s+(on|off)'))
-    async def bot_autoreply(event):
-        state = event.pattern_match.group(1); auto_reply_global['enabled'] = (state == 'on')
-        await event.reply(f"Автоответчик {'включён' if state == 'on' else 'выключен'}.")
-        add_log("CMD", f"Бот: автоответчик {state}"); await broadcast_state(); await backup_state()
-
-    @bot.on(events.NewMessage(pattern=r'^/status'))
-    async def bot_status(event):
-        await event.reply(f"Активных мутов: {len(muted_chats)}\nAFK: {len(afk_users)}\nАвтоответчик: {'включён' if auto_reply_global['enabled'] else 'выключен'}\nAI-автоответчик (ЛС): {'включён' if ai_auto_reply_enabled else 'выключен'}")
-
 # ---------- Веб-обработчики ----------
 async def check_auth(request):
     auth = request.headers.get("Authorization")
@@ -1330,30 +1281,117 @@ def shutdown_handler(signum, frame):
     save_json(BACKUP_LOCAL, data); os._exit(0)
 
 async def main():
-    global http_session, client2
+    global http_session, client2, bot
     http_session = ClientSession()
     await client1.start(); add_log("INFO", "✅ Аккаунт 1 запущен")
     if client2:
         try: await client2.start(); add_log("INFO", "✅ Аккаунт 2 запущен")
         except Exception as e: add_log("ERROR", f"Не удалось запустить второй аккаунт: {e}"); client2 = None
-    if bot:
-        while True:
-            try: await bot.start(bot_token=BOT_TOKEN); add_log("INFO", "🤖 Бот авторизации запущен"); break
-            except FloodWaitError as e: add_log("WARN", f"FloodWait: ждём {e.seconds} сек"); await asyncio.sleep(e.seconds)
-            except Exception as e: add_log("ERROR", f"Не удалось запустить бота: {e}"); break
-    await cleanup_old_backups(); await init_protected_users(); await restore_state()
-    asyncio.create_task(backup_loop()); asyncio.create_task(schedule_runner())
+
+    # Создаём и запускаем бота авторизации
+    bot = None
+    if BOT_TOKEN:
+        bot = TelegramClient(StringSession(), API_ID, API_HASH)
+        try:
+            await bot.start(bot_token=BOT_TOKEN)
+            add_log("INFO", "🤖 Бот авторизации запущен")
+
+            # Регистрируем обработчики бота только после успешного запуска
+            @bot.on(events.CallbackQuery)
+            async def auth_callback(event):
+                data = event.data.decode()
+                if data.startswith("approve:"):
+                    token = data.split(":")[1]
+                    if token in auth_tokens:
+                        auth_tokens[token] = True
+                        await event.edit("✅ Вход одобрен.", buttons=None)
+                        add_log("AUTH", "Вход одобрен через бота")
+                    elif token in pending_registrations:
+                        info = pending_registrations.pop(token)
+                        password = uuid.uuid4().hex[:8]
+                        admins[info["name"]] = {"password": hash_password(password), "role": info["role"]}
+                        save_admins()
+                        await event.edit(f"✅ Пользователь {info['name']} добавлен как {info['role']}. Пароль: {password}", buttons=None)
+                        add_log("AUTH", f"Новый пользователь {info['name']} зарегистрирован")
+                elif data.startswith("reject:"):
+                    token = data.split(":")[1]
+                    auth_tokens.pop(token, None)
+                    if token in pending_registrations:
+                        pending_registrations.pop(token)
+                    await event.edit("🚫 Вход отклонён.", buttons=None)
+                    add_log("AUTH", "Вход отклонён")
+
+            @bot.on(events.NewMessage(pattern=r'^/mute\s+(\S+)'))
+            async def bot_mute(event):
+                chat_id = int(event.pattern_match.group(1))
+                muted_chats.add(chat_id)
+                save_state()
+                await event.reply("Чат заглушен.")
+                add_log("CMD", f"Бот: мут чата {chat_id}")
+                await broadcast_state()
+                await backup_state()
+
+            @bot.on(events.NewMessage(pattern=r'^/unmute\s+(\S+)'))
+            async def bot_unmute(event):
+                chat_id = int(event.pattern_match.group(1))
+                muted_chats.discard(chat_id)
+                save_state()
+                await event.reply("Чат размучен.")
+                add_log("CMD", f"Бот: размут чата {chat_id}")
+                await broadcast_state()
+                await backup_state()
+
+            @bot.on(events.NewMessage(pattern=r'^/unmuteall'))
+            async def bot_unmuteall(event):
+                muted_chats.clear()
+                save_state()
+                await event.reply("Все чаты размучены.")
+                add_log("CMD", "Бот: сняты все муты")
+                await broadcast_state()
+                await backup_state()
+
+            @bot.on(events.NewMessage(pattern=r'^/autoreply\s+(on|off)'))
+            async def bot_autoreply(event):
+                state = event.pattern_match.group(1)
+                auto_reply_global['enabled'] = (state == 'on')
+                await event.reply(f"Автоответчик {'включён' if state == 'on' else 'выключен'}.")
+                add_log("CMD", f"Бот: автоответчик {state}")
+                await broadcast_state()
+                await backup_state()
+
+            @bot.on(events.NewMessage(pattern=r'^/status'))
+            async def bot_status(event):
+                await event.reply(f"Активных мутов: {len(muted_chats)}\nAFK: {len(afk_users)}\nАвтоответчик: {'включён' if auto_reply_global['enabled'] else 'выключен'}\nAI-автоответчик (ЛС): {'включён' if ai_auto_reply_enabled else 'выключен'}")
+
+        except Exception as e:
+            add_log("ERROR", f"Не удалось запустить бота авторизации: {e}")
+            bot = None
+    else:
+        add_log("WARN", "BOT_TOKEN не задан — бот авторизации не запущен")
+
+    await cleanup_old_backups()
+    await init_protected_users()
+    await restore_state()
+    asyncio.create_task(backup_loop())
+    asyncio.create_task(schedule_runner())
+
     # Автозапуск TDXT бота
     if os.environ.get("TDXT_BOT_TOKEN"):
         await tdxt_bot.start_tdxt()
         add_log("TDXT", "TDXT бот автоматически запущен")
+
     signal.signal(signal.SIGTERM, shutdown_handler)
     await start_web_server()
+
     tasks = [client1.run_until_disconnected()]
-    if client2: tasks.append(client2.run_until_disconnected())
-    if bot and bot.is_connected(): tasks.append(bot.run_until_disconnected())
+    if client2:
+        tasks.append(client2.run_until_disconnected())
+    if bot and bot.is_connected():
+        tasks.append(bot.run_until_disconnected())
     await asyncio.gather(*tasks)
-    if http_session: await http_session.close()
+
+    if http_session:
+        await http_session.close()
 
 if __name__ == "__main__":
     asyncio.run(main())
