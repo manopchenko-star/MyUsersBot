@@ -6,7 +6,7 @@ from gtts import gTTS
 from duckduckgo_search import DDGS
 
 BOT_TOKEN = os.environ.get("GROUP_AI_BOT_TOKEN", "")
-GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN", "")
+GITHUB_TOKEN32 = os.environ.get("GITHUB_TOKEN32", "")   # <-- отдельный ключ
 FOUNDER_USERNAME = "Anopchenko2011"
 AI_MODEL = "gpt-4o-mini"
 AI_MAX_TOKENS = 250
@@ -20,11 +20,10 @@ AI_SYSTEM_PROMPT = (
 )
 DATABASE = "group_ai_bot.db"
 
-# Глобальные структуры (живут в памяти)
-context_data = {}          # chat_id -> list of {"role":..., "content":...}
-last_random_time = {}      # chat_id -> datetime последней случайной отправки
-group_admins = set()       # user_id, глобальные администраторы бота
-founder_id = None          # user_id основателя (определится при первом /start)
+context_data = {}
+last_random_time = {}
+group_admins = set()
+founder_id = None
 
 def get_db():
     return sqlite3.connect(DATABASE, check_same_thread=False)
@@ -77,18 +76,16 @@ def set_group_setting(chat_id, key, value):
         c.execute("UPDATE group_settings SET interval_minutes=? WHERE chat_id=?", (int(value), chat_id))
     conn.commit(); conn.close()
 
-# ---------- Проверка прав ----------
 def is_admin(user_id):
     return user_id in group_admins or user_id == founder_id
 
 def is_founder_by_username(username):
     return username and username.lower() == FOUNDER_USERNAME.lower()
 
-# ---------- AI и утилиты ----------
 async def ask_ai(prompt, context=[]):
-    if not GITHUB_TOKEN:
-        return "❌ GitHub токен не задан."
-    headers = {"Authorization": f"Bearer {GITHUB_TOKEN}", "Content-Type": "application/json"}
+    if not GITHUB_TOKEN32:
+        return "❌ GITHUB_TOKEN32 не задан."
+    headers = {"Authorization": f"Bearer {GITHUB_TOKEN32}", "Content-Type": "application/json"}
     messages = [{"role":"system","content":AI_SYSTEM_PROMPT}]
     for entry in context[-10:]:
         messages.append(entry)
@@ -121,7 +118,7 @@ async def search_video(query):
         with DDGS() as ddgs:
             results = list(ddgs.videos(query, max_results=1))
             if results:
-                return results[0]['content']  # ссылка
+                return results[0]['content']
     except Exception as e:
         logging.error(f"Video search error: {e}")
     return None
@@ -136,17 +133,14 @@ RANDOM_TTS_PHRASES = [
     "Что-то я проголодался... А вы?"
 ]
 
-# ---------- Обработчики команд ----------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global founder_id
     user = update.effective_user
-    # Если пользователь в личке и он основатель по username — сохраняем его ID
     if update.effective_chat.type == "private" and is_founder_by_username(user.username):
         founder_id = user.id
         save_admin_to_db(founder_id)
         await update.message.reply_text("✅ Вы признаны основателем! Используйте команды в группах, куда добавлен бот.")
         return
-    # В группе показываем справку
     if update.effective_chat.type in ("group", "supergroup"):
         await update.message.reply_text(
             "👋 Я AI-помощник группы. Команды:\n"
@@ -166,7 +160,7 @@ async def enable_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     chat_id = update.effective_chat.id
     set_group_setting(chat_id, "enabled", True)
-    context_data.pop(chat_id, None)  # очищаем контекст при включении
+    context_data.pop(chat_id, None)
     await update.message.reply_text("✅ Бот включён в этом чате.")
 
 async def disable_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -216,7 +210,6 @@ async def settings_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data['waiting_interval'] = True
         await query.edit_message_text("Введите новый интервал в минутах (от 10 до 1440):")
         return
-    # Перерисовываем меню
     settings = get_group_settings(chat_id)
     tts_status = "🟢 Вкл" if settings['random_tts'] else "🔴 Выкл"
     video_status = "🟢 Вкл" if settings['random_video'] else "🔴 Выкл"
@@ -238,13 +231,9 @@ async def admin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     action = context.args[0].lower()
     username = context.args[1].lstrip("@")
     if action == "add":
-        # Мы не можем получить user_id по username в группе, поэтому сохраняем временно (username добавим позже)
-        # Предлагаем админу написать /start в ЛС
         await update.message.reply_text(f"✅ @{username} добавлен как администратор. Он должен написать /start в ЛС боту, чтобы активировать права.")
-        # Сохраним его username в отдельную таблицу или просто добавим с id=0 (обновится при /start)
-        save_admin_to_db(-1)  # временно
+        save_admin_to_db(-1)
     elif action == "remove":
-        # Удаляем по username? Нет user_id. Упростим: запросим ID
         await update.message.reply_text("Укажите команду /remove_admin <user_id>")
     else:
         await update.message.reply_text("Неизвестная подкоманда.")
@@ -268,15 +257,13 @@ async def remove_admin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except:
         await update.message.reply_text("Неверный ID.")
 
-# ---------- Обработка сообщений ----------
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.type not in ("group", "supergroup"):
-        return  # игнорируем личку
+        return
     chat_id = update.effective_chat.id
     user = update.effective_user
     text = update.message.text.strip() if update.message.text else ""
 
-    # Обработка ввода интервала (если админ ждал)
     if context.user_data.get('waiting_interval') and is_admin(user.id):
         try:
             interval = int(text)
@@ -292,22 +279,18 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     settings = get_group_settings(chat_id)
     if not settings['enabled']:
-        return  # бот выключен
+        return
 
-    # Пополняем контекст
     if chat_id not in context_data:
         context_data[chat_id] = []
     user_name = f"@{user.username}" if user.username else user.first_name
     context_data[chat_id].append({"role":"user","content":f"{user_name}: {text}"})
-    # Обрезаем контекст
     if len(context_data[chat_id]) > 20:
         context_data[chat_id] = context_data[chat_id][-20:]
 
-    # Запрос к ИИ
     answer = await ask_ai(text, context_data[chat_id])
     context_data[chat_id].append({"role":"assistant","content":answer})
 
-    # Проверяем специальные команды в ответе
     if answer.startswith("/tts "):
         tts_text = answer[5:].strip()
         voice = await generate_tts(tts_text)
@@ -325,10 +308,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await update.message.reply_text(answer)
 
-# ---------- Фоновая отправка случайных сообщений ----------
 async def random_sender(app: Application):
     while True:
-        await asyncio.sleep(60)  # проверка каждую минуту
+        await asyncio.sleep(60)
         try:
             conn = get_db(); c = conn.cursor()
             c.execute("SELECT chat_id, interval_minutes, random_tts, random_video FROM group_settings WHERE enabled=1")
@@ -341,7 +323,6 @@ async def random_sender(app: Application):
                     continue
                 if not tts_enabled and not video_enabled:
                     continue
-                # Выбираем тип
                 if tts_enabled and video_enabled:
                     choice = random.choice(['tts','video'])
                 elif tts_enabled:
@@ -365,7 +346,6 @@ async def random_sender(app: Application):
         except Exception as e:
             logging.error(f"Random sender error: {e}")
 
-# ---------- Управление ботом (для интеграции) ----------
 is_running = False
 application = None
 polling_task = None
@@ -379,7 +359,6 @@ async def start_group_ai():
         return
     init_db()
     group_admins = load_admins()
-    # Попытаемся найти основателя в БД (если он уже зарегистрирован)
     conn = get_db(); c = conn.cursor()
     c.execute("SELECT user_id FROM admins WHERE user_id != -1 AND user_id != 0")
     for row in c.fetchall():
@@ -389,21 +368,18 @@ async def start_group_ai():
     conn.close()
 
     app = Application.builder().token(BOT_TOKEN).build()
-    # Регистрация обработчиков
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("enable", enable_cmd))
     app.add_handler(CommandHandler("disable", disable_cmd))
     app.add_handler(CommandHandler("settings", settings_cmd))
     app.add_handler(CommandHandler("admin", admin_cmd))
     app.add_handler(CommandHandler("remove_admin", remove_admin_cmd))
-    app.add_handler(CommandHandler("help", start))  # справка через /help тоже
+    app.add_handler(CommandHandler("help", start))
     app.add_handler(CallbackQueryHandler(settings_callback, pattern="^(toggle_tts|toggle_video|change_interval|close_settings)$"))
-    # Сообщения в группах
     app.add_handler(MessageHandler(
         filters.TEXT & ~filters.COMMAND & (filters.ChatType.GROUPS | filters.ChatType.SUPERGROUP),
         handle_message
     ))
-    # Запускаем задачу случайных сообщений
     asyncio.create_task(random_sender(app))
     await app.initialize()
     await app.start()
