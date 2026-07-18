@@ -1,7 +1,7 @@
 import asyncio, sqlite3, os, logging, json, aiohttp
 from datetime import datetime
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton
-from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, ConversationHandler, filters, ContextTypes
+from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
 
 BOT_TOKEN = os.environ.get("SUPPORT_BOT_TOKEN", "")
 GITHUB_HELP = os.environ.get("GITHUB_HELP", "")
@@ -110,7 +110,8 @@ def user_keyboard():
 def admin_keyboard():
     return ReplyKeyboardMarkup([
         [KeyboardButton("📋 Все тикеты"), KeyboardButton("🆘 Поддержка")],
-        [KeyboardButton("👥 Админы"), KeyboardButton("⚙️ Настройки")]
+        [KeyboardButton("👥 Админы"), KeyboardButton("⚙️ Настройки")],
+        [KeyboardButton("🧪 Тестовый режим")]
     ], resize_keyboard=True)
 
 def operator_chat_keyboard():
@@ -119,7 +120,7 @@ def operator_chat_keyboard():
         [KeyboardButton("🧪 Тестовый режим"), KeyboardButton("🔙 Выйти без закрытия")]
     ], resize_keyboard=True)
 
-# Обработчики
+# ---------- Обработчики кнопок ----------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user; add_user(user.id, user.username or "unknown")
     if user.username and is_main_admin(user.username):
@@ -215,53 +216,78 @@ async def req_operator_callback(update: Update, context: ContextTypes.DEFAULT_TY
             try: await context.bot.send_message(uid, f"🔔 Новый тикет #{ticket_id} от @{user.username or user.id}.")
             except: pass
 
+# Новые обработчики кнопок, вынесенные из handle_message
+async def end_chat_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    if user.id not in user_chat_admin:
+        await update.message.reply_text("Эта кнопка только для оператора в активном чате.")
+        return
+    target_user = user_chat_admin[user.id]
+    conn = get_db(); c = conn.cursor()
+    c.execute("SELECT id FROM tickets WHERE status='in_progress' AND operator_id=? ORDER BY id DESC LIMIT 1", (user.id,))
+    row = c.fetchone(); conn.close()
+    tid = row[0] if row else None
+    await end_chat_session(update, context, user.id, target_user, tid)
+
+async def test_mode_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    if not is_admin(user.id):
+        await update.message.reply_text("⛔ Только для администраторов.")
+        return
+    if user.id in user_chat_admin:
+        # оператор в чате: входим в тестовый режим (смена клавиатуры)
+        test_mode_users.add(user.id)
+        await update.message.reply_text("🧪 Вы вошли в тестовый режим. Теперь вы общаетесь с ботом как обычный пользователь. Нажмите «🔙 Выйти из теста», чтобы вернуться.",
+                                        reply_markup=ReplyKeyboardMarkup([[KeyboardButton("🔙 Выйти из теста")]], resize_keyboard=True))
+    else:
+        # админ не в чате: просто включаем тестовый режим
+        test_mode_users.add(user.id)
+        await update.message.reply_text("🧪 Вы вошли в тестовый режим. Используйте клавиатуру пользователя. Для выхода нажмите «🔙 Выйти из теста».",
+                                        reply_markup=ReplyKeyboardMarkup([[KeyboardButton("🔙 Выйти из теста")]], resize_keyboard=True))
+
+async def exit_without_close_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    if user.id not in user_chat_admin:
+        await update.message.reply_text("Эта кнопка только для оператора в активном чате.")
+        return
+    target_user = user_chat_admin.pop(user.id)
+    active_chats.pop(target_user, None)
+    await update.message.reply_text("🔙 Вы вышли из чата. Тикет остаётся открытым.", reply_markup=admin_keyboard())
+    try: await context.bot.send_message(target_user, "🔒 Оператор завершил сеанс. Ожидайте другого оператора.")
+    except: pass
+
+async def exit_test_mode_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    if user.id in test_mode_users:
+        test_mode_users.discard(user.id)
+        if is_admin(user.id):
+            await update.message.reply_text("🔙 Вы вышли из тестового режима.", reply_markup=admin_keyboard())
+        else:
+            await update.message.reply_text("🔙 Вы вышли из тестового режима.", reply_markup=user_keyboard())
+    else:
+        await update.message.reply_text("Вы не в тестовом режиме.")
+
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global is_bot_enabled   # <-- обязательно до любого использования
+    global is_bot_enabled
     user = update.effective_user; msg = update.message.text
     if not msg: return
 
-    # Если пользователь в чате с оператором
+    # Пересылка сообщений в активном чате
     if user.id in active_chats:
         target_admin = active_chats[user.id]
         try: await context.bot.send_message(target_admin, f"💬 От @{user.username or user.id}: {msg}")
         except: pass
         return
 
-    # Если оператор в чате с пользователем
+    # Оператор в чате (но кнопки уже обрабатываются отдельными handler, сюда попадают только текстовые сообщения для пересылки)
     if user.id in user_chat_admin:
-        if msg == "❌ Завершить чат":
-            target_user = user_chat_admin[user.id]
-            conn = get_db(); c = conn.cursor()
-            c.execute("SELECT id FROM tickets WHERE status='in_progress' AND operator_id=? ORDER BY id DESC LIMIT 1", (user.id,))
-            row = c.fetchone(); conn.close()
-            tid = row[0] if row else None
-            await end_chat_session(update, context, user.id, target_user, tid)
-            return
-        elif msg == "🧪 Тестовый режим":
-            test_mode_users.add(user.id)
-            await update.message.reply_text("🧪 Вы вошли в тестовый режим. Теперь вы общаетесь с ботом как обычный пользователь. Нажмите «🔙 Выйти из теста», чтобы вернуться.",
-                                            reply_markup=ReplyKeyboardMarkup([[KeyboardButton("🔙 Выйти из теста")]], resize_keyboard=True))
-            return
-        elif msg == "🔙 Выйти без закрытия":
-            target_user = user_chat_admin.pop(user.id)
-            active_chats.pop(target_user, None)
-            await update.message.reply_text("🔙 Вы вышли из чата. Тикет остаётся открытым.", reply_markup=admin_keyboard())
-            try: await context.bot.send_message(target_user, "🔒 Оператор завершил сеанс. Ожидайте другого оператора.")
-            except: pass
-            return
-        else:
-            target_user = user_chat_admin[user.id]
-            try: await context.bot.send_message(target_user, f"👤 Оператор: {msg}")
-            except: pass
-            return
+        target_user = user_chat_admin[user.id]
+        try: await context.bot.send_message(target_user, f"👤 Оператор: {msg}")
+        except: pass
+        return
 
-    # Тестовый режим (админ вне чата)
+    # Тестовый режим (выход обрабатывается отдельно, здесь сам режим)
     if user.id in test_mode_users:
-        if msg == "🔙 Выйти из теста":
-            test_mode_users.discard(user.id)
-            await update.message.reply_text("🔙 Вы вышли из тестового режима.", reply_markup=admin_keyboard())
-            return
-        # Обрабатываем как пользовательский запрос к ИИ
         if is_bot_enabled:
             answer = await ask_ai(msg)
             await update.message.reply_text(answer)
@@ -377,19 +403,28 @@ async def start_support():
         logging.warning("SUPPORT_BOT_TOKEN не задан"); return
     init_db()
     app = Application.builder().token(BOT_TOKEN).build()
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("help", help_cmd))
+    # Обработчики кнопок (точные совпадения)
+    app.add_handler(MessageHandler(filters.Regex("^❌ Завершить чат$"), end_chat_button))
+    app.add_handler(MessageHandler(filters.Regex("^🧪 Тестовый режим$"), test_mode_button))
+    app.add_handler(MessageHandler(filters.Regex("^🔙 Выйти без закрытия$"), exit_without_close_button))
+    app.add_handler(MessageHandler(filters.Regex("^🔙 Выйти из теста$"), exit_test_mode_button))
+    # Стандартные кнопки меню
     app.add_handler(MessageHandler(filters.Regex("^🆘 Поддержка$"), support_button))
     app.add_handler(MessageHandler(filters.Regex("^📋 Мои тикеты$"), my_tickets_button))
     app.add_handler(MessageHandler(filters.Regex("^📋 Все тикеты$"), all_tickets_button))
     app.add_handler(MessageHandler(filters.Regex("^👥 Админы$"), admins_button))
     app.add_handler(MessageHandler(filters.Regex("^⚙️ Настройки$"), settings_button))
+    # Обработчик всех остальных текстовых сообщений
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    # Callback'и
     app.add_handler(CallbackQueryHandler(req_operator_callback, pattern="^req_operator$"))
     app.add_handler(CallbackQueryHandler(take_ticket_callback, pattern="^(take_|endchat_)"))
     app.add_handler(CallbackQueryHandler(toggle_bot_callback, pattern="^toggle_bot$"))
     app.add_handler(CallbackQueryHandler(add_admin_callback, pattern="^add_admin$"))
     app.add_handler(CallbackQueryHandler(remove_admin_callback, pattern="^remove_admin$"))
+    # Команды
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("help", help_cmd))
     await app.initialize()
     await app.start()
     polling_task = asyncio.create_task(app.updater.start_polling())
