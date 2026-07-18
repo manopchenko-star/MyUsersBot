@@ -216,6 +216,7 @@ async def req_operator_callback(update: Update, context: ContextTypes.DEFAULT_TY
             except: pass
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global is_bot_enabled   # <-- обязательно до любого использования
     user = update.effective_user; msg = update.message.text
     if not msg: return
 
@@ -275,15 +276,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not username:
             await update.message.reply_text("Некорректный формат. Отмена."); return
         if action == 'add_admin':
-            # Пытаемся найти пользователя по username; если не в базе – всё равно добавим username
-            # Реальный ID можно получить, только если пользователь уже взаимодействовал с ботом
-            # Для простоты добавляем запись с ID=0 (или просим пользователя написать боту)
-            # Лучше запросить пользователя написать /start, а пока сохраняем в pending
-            # Здесь упрощённо: добавляем запись с user_id = -1 (позже заменится при /start)
             add_admin_to_db(-1, username)
             await update.message.reply_text(f"✅ @{username} добавлен в список ожидания. Попросите его запустить /start.")
         elif action == 'remove_admin':
-            # Удаляем по username
             conn = get_db(); c = conn.cursor()
             c.execute("SELECT user_id FROM admins WHERE username=?", (username,))
             row = c.fetchone()
@@ -314,7 +309,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if is_main_admin(user.username):
         if msg.startswith("/support_on"):
-            global is_bot_enabled; is_bot_enabled = True
+            is_bot_enabled = True
             await update.message.reply_text("✅ Бот поддержки включён."); return
         if msg.startswith("/support_off"):
             is_bot_enabled = False
