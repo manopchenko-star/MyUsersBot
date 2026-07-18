@@ -15,6 +15,7 @@ from duckduckgo_search import DDGS
 from bs4 import BeautifulSoup
 import tdxt_bot
 import support_bot
+import group_ai_bot
 
 AudioSegment.converter = "/opt/render/project/src/ffmpeg"
 
@@ -1235,6 +1236,18 @@ async def api_support_stop(request):
 async def api_support_status(request):
     return web.json_response({"running": support_bot.is_running})
 
+# Group AI API
+async def api_groupai_start(request):
+    await group_ai_bot.start_group_ai()
+    return web.json_response({"status": "started"})
+
+async def api_groupai_stop(request):
+    await group_ai_bot.stop_group_ai()
+    return web.json_response({"status": "stopped"})
+
+async def api_groupai_status(request):
+    return web.json_response({"running": group_ai_bot.is_running})
+
 app = web.Application()
 app.router.add_get("/", lambda r: web.Response(text="OK"))
 app.router.add_get("/login", login_page)
@@ -1284,6 +1297,9 @@ app.router.add_get("/api/tdxt/status", api_tdxt_status)
 app.router.add_get("/api/support/start", api_support_start)
 app.router.add_get("/api/support/stop", api_support_stop)
 app.router.add_get("/api/support/status", api_support_status)
+app.router.add_get("/api/groupai/start", api_groupai_start)
+app.router.add_get("/api/groupai/stop", api_groupai_stop)
+app.router.add_get("/api/groupai/status", api_groupai_status)
 
 async def start_web_server():
     runner = web.AppRunner(app); await runner.setup()
@@ -1399,6 +1415,11 @@ async def main():
     if os.environ.get("SUPPORT_BOT_TOKEN"):
         await support_bot.start_support()
         add_log("SUPPORT", "Support бот автоматически запущен")
+
+    # Автозапуск Group AI бота
+    if os.environ.get("GROUP_AI_BOT_TOKEN"):
+        await group_ai_bot.start_group_ai()
+        add_log("GROUP_AI", "Group AI бот автоматически запущен")
 
     signal.signal(signal.SIGTERM, shutdown_handler)
     await start_web_server()
