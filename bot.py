@@ -14,6 +14,7 @@ from pydub import AudioSegment
 from duckduckgo_search import DDGS
 from bs4 import BeautifulSoup
 import tdxt_bot
+import support_bot
 
 AudioSegment.converter = "/opt/render/project/src/ffmpeg"
 
@@ -1222,6 +1223,18 @@ async def api_tdxt_stop(request):
 async def api_tdxt_status(request):
     return web.json_response({"running": tdxt_bot.is_running})
 
+# Support API
+async def api_support_start(request):
+    await support_bot.start_support()
+    return web.json_response({"status": "started"})
+
+async def api_support_stop(request):
+    await support_bot.stop_support()
+    return web.json_response({"status": "stopped"})
+
+async def api_support_status(request):
+    return web.json_response({"running": support_bot.is_running})
+
 app = web.Application()
 app.router.add_get("/", lambda r: web.Response(text="OK"))
 app.router.add_get("/login", login_page)
@@ -1268,6 +1281,9 @@ app.router.add_post("/api/set_ai_token", api_set_ai_token)
 app.router.add_get("/api/tdxt/start", api_tdxt_start)
 app.router.add_get("/api/tdxt/stop", api_tdxt_stop)
 app.router.add_get("/api/tdxt/status", api_tdxt_status)
+app.router.add_get("/api/support/start", api_support_start)
+app.router.add_get("/api/support/stop", api_support_stop)
+app.router.add_get("/api/support/status", api_support_status)
 
 async def start_web_server():
     runner = web.AppRunner(app); await runner.setup()
@@ -1296,7 +1312,6 @@ async def main():
             await bot.start(bot_token=BOT_TOKEN)
             add_log("INFO", "🤖 Бот авторизации запущен")
 
-            # Регистрируем обработчики бота только после успешного запуска
             @bot.on(events.CallbackQuery)
             async def auth_callback(event):
                 data = event.data.decode()
@@ -1379,6 +1394,11 @@ async def main():
     if os.environ.get("TDXT_BOT_TOKEN"):
         await tdxt_bot.start_tdxt()
         add_log("TDXT", "TDXT бот автоматически запущен")
+
+    # Автозапуск Support бота
+    if os.environ.get("SUPPORT_BOT_TOKEN"):
+        await support_bot.start_support()
+        add_log("SUPPORT", "Support бот автоматически запущен")
 
     signal.signal(signal.SIGTERM, shutdown_handler)
     await start_web_server()
