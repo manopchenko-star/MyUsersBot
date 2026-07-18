@@ -21,7 +21,7 @@ DATABASE = "support_bot.db"
 active_chats = {}          # user_id -> operator_id
 user_chat_admin = {}       # operator_id -> user_id
 is_bot_enabled = True
-test_mode_users = set()    # user_id админов, находящихся в тестовом режиме
+test_mode_users = set()
 
 def get_db(): return sqlite3.connect(DATABASE, check_same_thread=False)
 
@@ -32,7 +32,8 @@ def init_db():
     c.execute('''CREATE TABLE IF NOT EXISTS tickets (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         user_id INTEGER, username TEXT, question TEXT, status TEXT DEFAULT 'open',
-        operator_id INTEGER, created_at TEXT, closed_at TEXT)''')
+        operator_id INTEGER, created_at TEXT, closed_at TEXT,
+        ai_tag TEXT DEFAULT '')''')
     c.execute("INSERT OR IGNORE INTO admins (user_id, username) VALUES (0, ?)", (MAIN_ADMIN_USERNAME,))
     conn.commit(); conn.close()
 
@@ -63,6 +64,21 @@ def get_open_tickets():
     conn = get_db(); c = conn.cursor()
     c.execute("SELECT id, user_id, username, question, created_at FROM tickets WHERE status='open' ORDER BY id")
     rows = c.fetchall(); conn.close(); return rows
+
+def get_underage_tickets():
+    conn = get_db(); c = conn.cursor()
+    c.execute("SELECT id, user_id, username, question, created_at FROM tickets WHERE status='open' AND ai_tag='underage' ORDER BY id")
+    rows = c.fetchall(); conn.close(); return rows
+
+def get_last_open_ticket(user_id):
+    conn = get_db(); c = conn.cursor()
+    c.execute("SELECT id FROM tickets WHERE user_id=? AND status='open' ORDER BY id DESC LIMIT 1", (user_id,))
+    row = c.fetchone(); conn.close(); return row[0] if row else None
+
+def set_ticket_tag(ticket_id, tag):
+    conn = get_db(); c = conn.cursor()
+    c.execute("UPDATE tickets SET ai_tag=? WHERE id=?", (tag, ticket_id))
+    conn.commit(); conn.close()
 
 def assign_ticket(ticket_id, operator_id):
     conn = get_db(); c = conn.cursor()
@@ -109,9 +125,9 @@ def user_keyboard():
 
 def admin_keyboard():
     return ReplyKeyboardMarkup([
-        [KeyboardButton("📋 Все тикеты"), KeyboardButton("🆘 Поддержка")],
-        [KeyboardButton("👥 Админы"), KeyboardButton("⚙️ Настройки")],
-        [KeyboardButton("🧪 Тестовый режим")]
+        [KeyboardButton("📋 Все тикеты"), KeyboardButton("⏳ Не могут зайти")],
+        [KeyboardButton("🆘 Поддержка"), KeyboardButton("👥 Админы")],
+        [KeyboardButton("⚙️ Настройки"), KeyboardButton("🧪 Тестовый режим")]
     ], resize_keyboard=True)
 
 def operator_chat_keyboard():
@@ -161,6 +177,24 @@ async def all_tickets_button(update: Update, context: ContextTypes.DEFAULT_TYPE)
         tid, uid, uname, q, _ = t
         text += f"#{tid} от @{uname}: {q[:40]}...\n"
         keyboard.append([InlineKeyboardButton(f"✉️ Ответить #{tid}", callback_data=f"take_{tid}")])
+    await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
+
+async def underage_tickets_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_admin(update.effective_user.id):
+        await update.message.reply_text("⛔ Только администратор."); return
+    tickets = get_underage_tickets()
+    if not tickets:
+        await update.message.reply_text("Нет игроков с проблемой возраста."); return
+    text = "⏳ Игроки, которые не могут зайти (нужна помощь):\n\n"
+    keyboard = []
+    for t in tickets:
+        tid, uid, uname, q, _ = t
+        # Попробуем извлечь ник из вопроса (пользователь его сообщил)
+        nick = "не указан"
+        if "ник:" in q.lower():
+            nick = q.split("ник:")[-1].strip().split()[0]
+        text += f"#{tid} @{uname} (ник: {nick})\n"
+        keyboard.append([InlineKeyboardButton(f"✉️ Помочь #{tid}", callback_data=f"take_{tid}")])
     await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
 
 async def admins_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -216,7 +250,7 @@ async def req_operator_callback(update: Update, context: ContextTypes.DEFAULT_TY
             try: await context.bot.send_message(uid, f"🔔 Новый тикет #{ticket_id} от @{user.username or user.id}.")
             except: pass
 
-# Новые обработчики кнопок, вынесенные из handle_message
+# Кнопки оператора
 async def end_chat_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     if user.id not in user_chat_admin:
@@ -234,14 +268,11 @@ async def test_mode_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(user.id):
         await update.message.reply_text("⛔ Только для администраторов.")
         return
+    test_mode_users.add(user.id)
     if user.id in user_chat_admin:
-        # оператор в чате: входим в тестовый режим (смена клавиатуры)
-        test_mode_users.add(user.id)
-        await update.message.reply_text("🧪 Вы вошли в тестовый режим. Теперь вы общаетесь с ботом как обычный пользователь. Нажмите «🔙 Выйти из теста», чтобы вернуться.",
+        await update.message.reply_text("🧪 Вы вошли в тестовый режим (чат приостановлен). Нажмите «🔙 Выйти из теста», чтобы вернуться.",
                                         reply_markup=ReplyKeyboardMarkup([[KeyboardButton("🔙 Выйти из теста")]], resize_keyboard=True))
     else:
-        # админ не в чате: просто включаем тестовый режим
-        test_mode_users.add(user.id)
         await update.message.reply_text("🧪 Вы вошли в тестовый режим. Используйте клавиатуру пользователя. Для выхода нажмите «🔙 Выйти из теста».",
                                         reply_markup=ReplyKeyboardMarkup([[KeyboardButton("🔙 Выйти из теста")]], resize_keyboard=True))
 
@@ -272,21 +303,20 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user; msg = update.message.text
     if not msg: return
 
-    # Пересылка сообщений в активном чате
+    # Пересылка в активном чате
     if user.id in active_chats:
         target_admin = active_chats[user.id]
         try: await context.bot.send_message(target_admin, f"💬 От @{user.username or user.id}: {msg}")
         except: pass
         return
 
-    # Оператор в чате (но кнопки уже обрабатываются отдельными handler, сюда попадают только текстовые сообщения для пересылки)
     if user.id in user_chat_admin:
         target_user = user_chat_admin[user.id]
         try: await context.bot.send_message(target_user, f"👤 Оператор: {msg}")
         except: pass
         return
 
-    # Тестовый режим (выход обрабатывается отдельно, здесь сам режим)
+    # Тестовый режим
     if user.id in test_mode_users:
         if is_bot_enabled:
             answer = await ask_ai(msg)
@@ -295,7 +325,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("Бот временно недоступен.")
         return
 
-    # Действия по вводу username для добавления/удаления админа
+    # Добавление/удаление админа
     if context.user_data.get('action') in ('add_admin', 'remove_admin'):
         action = context.user_data.pop('action')
         username = msg.strip().lstrip("@")
@@ -316,7 +346,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             conn.close()
         return
 
-    # Команды ответа на тикет (вне чата)
+    # Команда ответа на тикет
     if is_admin(user.id) and msg.startswith("/answer "):
         parts = msg.split(maxsplit=2)
         if len(parts) < 3:
@@ -344,8 +374,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_bot_enabled:
         await update.message.reply_text("Бот временно недоступен."); return
 
-    # Обычное сообщение от пользователя (или админа не в тесте)
+    # Обычное сообщение – обрабатываем ИИ
     answer = await ask_ai(msg)
+    # Проверяем, содержит ли ответ ссылку на группу (значит проблема возраста)
+    if "вступите в нашу группу" in answer.lower() or "Defense-mans" in answer:
+        # Помечаем последний открытый тикет пользователя
+        tid = get_last_open_ticket(user.id)
+        if tid:
+            set_ticket_tag(tid, "underage")
     if "оператор" in answer.lower() or "свяжитесь с оператором" in answer.lower():
         kb = InlineKeyboardMarkup([[InlineKeyboardButton("📞 Связаться с оператором", callback_data="req_operator")]])
         await update.message.reply_text(answer + "\n\nИли нажмите кнопку:", reply_markup=kb)
@@ -403,26 +439,23 @@ async def start_support():
         logging.warning("SUPPORT_BOT_TOKEN не задан"); return
     init_db()
     app = Application.builder().token(BOT_TOKEN).build()
-    # Обработчики кнопок (точные совпадения)
+    # Кнопки точного совпадения
     app.add_handler(MessageHandler(filters.Regex("^❌ Завершить чат$"), end_chat_button))
     app.add_handler(MessageHandler(filters.Regex("^🧪 Тестовый режим$"), test_mode_button))
     app.add_handler(MessageHandler(filters.Regex("^🔙 Выйти без закрытия$"), exit_without_close_button))
     app.add_handler(MessageHandler(filters.Regex("^🔙 Выйти из теста$"), exit_test_mode_button))
-    # Стандартные кнопки меню
     app.add_handler(MessageHandler(filters.Regex("^🆘 Поддержка$"), support_button))
     app.add_handler(MessageHandler(filters.Regex("^📋 Мои тикеты$"), my_tickets_button))
     app.add_handler(MessageHandler(filters.Regex("^📋 Все тикеты$"), all_tickets_button))
+    app.add_handler(MessageHandler(filters.Regex("^⏳ Не могут зайти$"), underage_tickets_button))
     app.add_handler(MessageHandler(filters.Regex("^👥 Админы$"), admins_button))
     app.add_handler(MessageHandler(filters.Regex("^⚙️ Настройки$"), settings_button))
-    # Обработчик всех остальных текстовых сообщений
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    # Callback'и
     app.add_handler(CallbackQueryHandler(req_operator_callback, pattern="^req_operator$"))
     app.add_handler(CallbackQueryHandler(take_ticket_callback, pattern="^(take_|endchat_)"))
     app.add_handler(CallbackQueryHandler(toggle_bot_callback, pattern="^toggle_bot$"))
     app.add_handler(CallbackQueryHandler(add_admin_callback, pattern="^add_admin$"))
     app.add_handler(CallbackQueryHandler(remove_admin_callback, pattern="^remove_admin$"))
-    # Команды
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_cmd))
     await app.initialize()
