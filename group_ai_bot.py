@@ -20,12 +20,11 @@ AI_SYSTEM_PROMPT = (
 )
 DATABASE = "group_ai_bot.db"
 
-context_data = {}          # chat_id -> list of {"role":..., "content":...}
-last_random_time = {}      # chat_id -> datetime
+context_data = {}
+last_random_time = {}
 group_admins = set()
 founder_id = None
 
-# ---------- Звуковые мемы ----------
 SOUND_MEMES = {
     "планктон": "https://www.myinstants.com/media/sounds/plankton-aaa.mp3",
     "это мой сын": "https://www.myinstants.com/media/sounds/eto-moi-syn.mp3",
@@ -43,12 +42,11 @@ SOUND_MEMES = {
     "сюрприз": "https://www.myinstants.com/media/sounds/surprise-mf.mp3",
 }
 
-# ---------- База данных ----------
 def get_db(): return sqlite3.connect(DATABASE, check_same_thread=False)
 
 def init_db():
     conn = get_db(); c = conn.cursor()
-    c.execute('''CREATE TABLE IF NOT EXISTS admins (user_id INTEGER PRIMARY KEY)''')
+    c.execute('''CREATE TABLE IF NOT EXISTS admins (user_id INTEGER PRIMARY KEY, username TEXT)''')
     c.execute('''CREATE TABLE IF NOT EXISTS group_settings (
         chat_id INTEGER PRIMARY KEY,
         enabled INTEGER DEFAULT 0,
@@ -60,18 +58,33 @@ def init_db():
 
 def load_admins():
     conn = get_db(); c = conn.cursor()
-    c.execute("SELECT user_id FROM admins")
+    c.execute("SELECT user_id FROM admins WHERE user_id != -1")
     return {row[0] for row in c.fetchall()}
 
-def save_admin_to_db(user_id):
+def save_admin_to_db(user_id, username=None):
     conn = get_db(); c = conn.cursor()
-    c.execute("INSERT OR IGNORE INTO admins VALUES (?)", (user_id,))
+    if username:
+        c.execute("INSERT OR IGNORE INTO admins (user_id, username) VALUES (?,?)", (user_id, username))
+    else:
+        c.execute("INSERT OR IGNORE INTO admins (user_id) VALUES (?)", (user_id,))
     conn.commit(); conn.close()
+
+def update_admin_id(username, new_id):
+    """Заменяет временную запись (user_id=-1) на реальный ID пользователя."""
+    conn = get_db(); c = conn.cursor()
+    c.execute("DELETE FROM admins WHERE username=? AND user_id=-1", (username,))
+    c.execute("INSERT OR IGNORE INTO admins (user_id, username) VALUES (?,?)", (new_id, username))
+    conn.commit(); conn.close()
+    # Перезагружаем множество админов в памяти
+    global group_admins
+    group_admins = load_admins()
 
 def remove_admin_from_db(user_id):
     conn = get_db(); c = conn.cursor()
     c.execute("DELETE FROM admins WHERE user_id=?", (user_id,))
     conn.commit(); conn.close()
+    global group_admins
+    group_admins.discard(user_id)
 
 def get_group_settings(chat_id):
     conn = get_db(); c = conn.cursor()
@@ -99,7 +112,6 @@ def is_admin(user_id):
 def is_founder(username):
     return username and username.lower() == FOUNDER_USERNAME.lower()
 
-# ---------- AI и утилиты ----------
 async def ask_ai(prompt, context=[]):
     if not GITHUB_TOKEN32: return "❌ GITHUB_TOKEN32 не задан."
     headers = {"Authorization": f"Bearer {GITHUB_TOKEN32}", "Content-Type": "application/json"}
@@ -133,15 +145,33 @@ async def search_video(query):
             if results: return results[0]['content']
     except: return None
 
-# ---------- Обработчики команд ----------
+# ---------- Обработчики ----------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global founder_id
     user = update.effective_user
-    if update.effective_chat.type == "private" and is_founder(user.username):
+    username = user.username
+
+    # Если пользователь в личке и он основатель – сохраняем его ID
+    if update.effective_chat.type == "private" and is_founder(username):
         founder_id = user.id
-        save_admin_to_db(founder_id)
+        save_admin_to_db(founder_id, username)
         await update.message.reply_text("✅ Вы признаны основателем! Используйте команды в группах.")
         return
+
+    # Проверяем, есть ли username среди ожидающих подтверждения (добавлен через /admin add)
+    if username:
+        conn = get_db(); c = conn.cursor()
+        c.execute("SELECT 1 FROM admins WHERE username=? AND user_id=-1", (username,))
+        if c.fetchone():
+            update_admin_id(username, user.id)
+            conn.close()
+            if update.effective_chat.type == "private":
+                await update.message.reply_text("✅ Ваши права администратора активированы! Теперь вы можете управлять ботом в группах.")
+            else:
+                await update.message.reply_text("✅ Права администратора активированы.")
+        else:
+            conn.close()
+
     if update.effective_chat.type in ("group", "supergroup"):
         await update.message.reply_text(
             "👋 Я AI-помощник. Чтобы обратиться ко мне, упомяните @username бота или ответьте на моё сообщение.\n\n"
@@ -200,7 +230,6 @@ async def tts_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await update.message.reply_text("Не удалось создать голосовое сообщение.")
 
-# ---------- Управление ботом ----------
 async def enable_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.effective_user.id):
         await update.message.reply_text("⛔ Только администратор."); return
@@ -265,12 +294,25 @@ async def admin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args or len(context.args) < 2:
         await update.message.reply_text("Использование: /admin add @user или /admin remove @user"); return
     action = context.args[0].lower()
-    username = context.args[1].lstrip("@")
+    username = context.args[1].lstrip("@").lower()
     if action == "add":
-        save_admin_to_db(-1)
-        await update.message.reply_text(f"✅ @{username} добавлен как администратор. Он должен написать /start в ЛС боту.")
+        # Сохраняем запись с временным ID -1 и username
+        save_admin_to_db(-1, username)
+        await update.message.reply_text(f"✅ @{username} добавлен в список ожидания. Попросите его написать /start в личные сообщения боту.")
     elif action == "remove":
-        await update.message.reply_text("Для удаления используйте /remove_admin <user_id>")
+        # Удаляем по username (если есть запись с реальным ID, удаляем её)
+        conn = get_db(); c = conn.cursor()
+        c.execute("SELECT user_id FROM admins WHERE username=? AND user_id != -1", (username,))
+        row = c.fetchone()
+        if row:
+            remove_admin_from_db(row[0])
+            await update.message.reply_text(f"❌ @{username} удалён из администраторов.")
+        else:
+            # Удаляем и временную запись, если была
+            c.execute("DELETE FROM admins WHERE username=? AND user_id=-1", (username,))
+            conn.commit()
+            await update.message.reply_text(f"❌ @{username} удалён из списка ожидания.")
+        conn.close()
     else:
         await update.message.reply_text("Неизвестная подкоманда.")
 
@@ -284,26 +326,22 @@ async def remove_admin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if user_id == founder_id:
             await update.message.reply_text("Нельзя удалить основателя."); return
         remove_admin_from_db(user_id)
-        if user_id in group_admins: group_admins.discard(user_id)
         await update.message.reply_text("✅ Администратор удалён.")
     except:
         await update.message.reply_text("Неверный ID.")
 
-# ---------- Обработка сообщений ----------
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Работаем только в группах
     if update.effective_chat.type not in ("group", "supergroup"):
         return
     chat_id = update.effective_chat.id
     user = update.effective_user
     bot_username = context.bot.username
 
-    # Проверяем, включён ли бот
     settings = get_group_settings(chat_id)
     if not settings['enabled']:
         return
 
-    # Обработка ввода интервала (если админ ждал)
+    # Обработка ввода интервала
     if context.user_data.get('waiting_interval') and is_admin(user.id):
         text = update.message.text.strip()
         try:
@@ -318,27 +356,19 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data['waiting_interval'] = False
         return
 
-    # Определяем, обращаются ли к боту
     mentioned = False
-    if update.message.text:
-        # Проверка на упоминание @username
-        if f"@{bot_username}" in update.message.text:
-            mentioned = True
-    # Проверка на ответ на сообщение бота
+    if update.message.text and f"@{bot_username}" in update.message.text:
+        mentioned = True
     if update.message.reply_to_message and update.message.reply_to_message.from_user.id == context.bot.id:
         mentioned = True
 
     if not mentioned:
-        return  # не отвечаем, если не тегнули и не ответили
+        return
 
-    # Очищаем текст от упоминания для удобства
     clean_text = update.message.text.replace(f"@{bot_username}", "").strip() if update.message.text else ""
-
-    # Если нет текста после удаления упоминания, придумываем что-то весёлое
     if not clean_text:
         clean_text = "Привет! Расскажи что-нибудь смешное."
 
-    # Сохраняем контекст
     if chat_id not in context_data:
         context_data[chat_id] = []
     user_name = f"@{user.username}" if user.username else user.first_name
@@ -346,15 +376,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if len(context_data[chat_id]) > 6:
         context_data[chat_id] = context_data[chat_id][-6:]
 
-    # Запрос к AI
     answer = await ask_ai(clean_text, context_data[chat_id])
     context_data[chat_id].append({"role":"assistant","content":answer})
     await update.message.reply_text(answer)
 
-# ---------- Случайные отправки звуков/видео ----------
 async def random_sender(app: Application):
     while True:
-        await asyncio.sleep(60)  # проверка каждую минуту
+        await asyncio.sleep(60)
         try:
             conn = get_db(); c = conn.cursor()
             c.execute("SELECT chat_id, interval_minutes, random_tts, random_video FROM group_settings WHERE enabled=1")
@@ -368,7 +396,6 @@ async def random_sender(app: Application):
                 if not tts_enabled and not video_enabled:
                     continue
 
-                # Выбираем тип случайного контента
                 if tts_enabled and video_enabled:
                     choice = random.choice(['sound','video'])
                 elif tts_enabled:
@@ -378,7 +405,6 @@ async def random_sender(app: Application):
 
                 try:
                     if choice == 'sound':
-                        # Берём случайный звуковой мем из SOUND_MEMES
                         name, url = random.choice(list(SOUND_MEMES.items()))
                         await app.bot.send_audio(chat_id, audio=url, title=name)
                     else:
@@ -392,7 +418,6 @@ async def random_sender(app: Application):
         except Exception as e:
             logging.error(f"Random sender error: {e}")
 
-# ---------- Управление ботом ----------
 is_running = False
 application = None
 polling_task = None
@@ -404,16 +429,16 @@ async def start_group_ai():
         logging.warning("GROUP_AI_BOT_TOKEN не задан"); return
     init_db()
     group_admins = load_admins()
+    # Попытка найти основателя по username
     conn = get_db(); c = conn.cursor()
-    c.execute("SELECT user_id FROM admins WHERE user_id != -1 AND user_id != 0")
-    for row in c.fetchall():
-        if row[0]:
-            founder_id = row[0]; break
+    c.execute("SELECT user_id FROM admins WHERE username=?", (FOUNDER_USERNAME,))
+    row = c.fetchone()
+    if row and row[0] != -1:
+        founder_id = row[0]
     conn.close()
 
     app = Application.builder().token(BOT_TOKEN).build()
 
-    # Команды
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("meme", meme_cmd))
     app.add_handler(CommandHandler("joke", joke_cmd))
@@ -427,13 +452,9 @@ async def start_group_ai():
     app.add_handler(CommandHandler("admin", admin_cmd))
     app.add_handler(CommandHandler("remove_admin", remove_admin_cmd))
     app.add_handler(CommandHandler("help", start))
-
-    # Обработка текста в группах
     app.add_handler(MessageHandler(filters.TEXT & (filters.ChatType.GROUPS | filters.ChatType.SUPERGROUP), handle_message))
-    # Callback-обработчик
     app.add_handler(CallbackQueryHandler(settings_callback, pattern="^(toggle_tts|toggle_video|change_interval|close_settings)$"))
 
-    # Запуск случайных отправок
     asyncio.create_task(random_sender(app))
 
     await app.initialize()
