@@ -64,13 +64,15 @@ def load_admins():
 def save_admin_to_db(user_id, username=None):
     conn = get_db(); c = conn.cursor()
     if username:
-        c.execute("INSERT OR IGNORE INTO admins (user_id, username) VALUES (?,?)", (user_id, username))
+        # всегда сохраняем в нижнем регистре
+        c.execute("INSERT OR IGNORE INTO admins (user_id, username) VALUES (?,?)", (user_id, username.lower()))
     else:
         c.execute("INSERT OR IGNORE INTO admins (user_id) VALUES (?)", (user_id,))
     conn.commit(); conn.close()
 
 def update_admin_id(username, new_id):
-    """Заменяет временную запись (user_id=-1) на реальный ID пользователя."""
+    """Заменяет временную запись (user_id=-1) на реальный ID пользователя.
+       username ожидается уже в нижнем регистре."""
     conn = get_db(); c = conn.cursor()
     c.execute("DELETE FROM admins WHERE username=? AND user_id=-1", (username,))
     c.execute("INSERT OR IGNORE INTO admins (user_id, username) VALUES (?,?)", (new_id, username))
@@ -153,20 +155,21 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Основатель в личке
     if update.effective_chat.type == "private" and is_founder(username):
         founder_id = user.id
-        save_admin_to_db(founder_id, username)
+        save_admin_to_db(founder_id, username)   # save_admin_to_db сам переведет в нижний регистр
         await update.message.reply_text("✅ Вы признаны основателем! Используйте команды в группах.")
         return
 
     # Активация прав нового администратора
     if username:
+        username_lower = username.lower()
         conn = get_db(); c = conn.cursor()
-        c.execute("SELECT 1 FROM admins WHERE username=? AND user_id=-1", (username,))
+        c.execute("SELECT 1 FROM admins WHERE username=? AND user_id=-1", (username_lower,))
         if c.fetchone():
-            update_admin_id(username, user.id)
+            update_admin_id(username_lower, user.id)
             conn.close()
             if update.effective_chat.type == "private":
                 await update.message.reply_text("✅ Ваши права администратора активированы! Теперь вы можете управлять ботом в группах.")
-                return   # Важно: не выводить лишнее сообщение
+                return
             else:
                 await update.message.reply_text("✅ Права администратора активированы.")
         else:
@@ -296,10 +299,11 @@ async def admin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     action = context.args[0].lower()
     username = context.args[1].lstrip("@").lower()
     if action == "add":
-        save_admin_to_db(-1, username)
+        save_admin_to_db(-1, username)   # сохраняет в нижнем регистре
         await update.message.reply_text(f"✅ @{username} добавлен в список ожидания. Попросите его написать /start в личные сообщения боту.")
     elif action == "remove":
         conn = get_db(); c = conn.cursor()
+        # ищем по нижнему регистру
         c.execute("SELECT user_id FROM admins WHERE username=? AND user_id != -1", (username,))
         row = c.fetchone()
         if row:
@@ -427,7 +431,7 @@ async def start_group_ai():
     init_db()
     group_admins = load_admins()
     conn = get_db(); c = conn.cursor()
-    c.execute("SELECT user_id FROM admins WHERE username=?", (FOUNDER_USERNAME,))
+    c.execute("SELECT user_id FROM admins WHERE username=?", (FOUNDER_USERNAME.lower(),))
     row = c.fetchone()
     if row and row[0] != -1:
         founder_id = row[0]
