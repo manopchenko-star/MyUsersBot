@@ -75,7 +75,6 @@ def update_admin_id(username, new_id):
     c.execute("DELETE FROM admins WHERE username=? AND user_id=-1", (username,))
     c.execute("INSERT OR IGNORE INTO admins (user_id, username) VALUES (?,?)", (new_id, username))
     conn.commit(); conn.close()
-    # Перезагружаем множество админов в памяти
     global group_admins
     group_admins = load_admins()
 
@@ -151,14 +150,14 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     username = user.username
 
-    # Если пользователь в личке и он основатель – сохраняем его ID
+    # Основатель в личке
     if update.effective_chat.type == "private" and is_founder(username):
         founder_id = user.id
         save_admin_to_db(founder_id, username)
         await update.message.reply_text("✅ Вы признаны основателем! Используйте команды в группах.")
         return
 
-    # Проверяем, есть ли username среди ожидающих подтверждения (добавлен через /admin add)
+    # Активация прав нового администратора
     if username:
         conn = get_db(); c = conn.cursor()
         c.execute("SELECT 1 FROM admins WHERE username=? AND user_id=-1", (username,))
@@ -167,6 +166,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             conn.close()
             if update.effective_chat.type == "private":
                 await update.message.reply_text("✅ Ваши права администратора активированы! Теперь вы можете управлять ботом в группах.")
+                return   # Важно: не выводить лишнее сообщение
             else:
                 await update.message.reply_text("✅ Права администратора активированы.")
         else:
@@ -296,11 +296,9 @@ async def admin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     action = context.args[0].lower()
     username = context.args[1].lstrip("@").lower()
     if action == "add":
-        # Сохраняем запись с временным ID -1 и username
         save_admin_to_db(-1, username)
         await update.message.reply_text(f"✅ @{username} добавлен в список ожидания. Попросите его написать /start в личные сообщения боту.")
     elif action == "remove":
-        # Удаляем по username (если есть запись с реальным ID, удаляем её)
         conn = get_db(); c = conn.cursor()
         c.execute("SELECT user_id FROM admins WHERE username=? AND user_id != -1", (username,))
         row = c.fetchone()
@@ -308,7 +306,6 @@ async def admin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             remove_admin_from_db(row[0])
             await update.message.reply_text(f"❌ @{username} удалён из администраторов.")
         else:
-            # Удаляем и временную запись, если была
             c.execute("DELETE FROM admins WHERE username=? AND user_id=-1", (username,))
             conn.commit()
             await update.message.reply_text(f"❌ @{username} удалён из списка ожидания.")
@@ -429,7 +426,6 @@ async def start_group_ai():
         logging.warning("GROUP_AI_BOT_TOKEN не задан"); return
     init_db()
     group_admins = load_admins()
-    # Попытка найти основателя по username
     conn = get_db(); c = conn.cursor()
     c.execute("SELECT user_id FROM admins WHERE username=?", (FOUNDER_USERNAME,))
     row = c.fetchone()
