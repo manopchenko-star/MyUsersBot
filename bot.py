@@ -14,17 +14,10 @@ from pydub import AudioSegment
 from duckduckgo_search import DDGS
 from bs4 import BeautifulSoup
 try:
-    import tdxt_bot
-except ImportError:
-    tdxt_bot = None
-try:
-    import support_bot
-except ImportError:
-    support_bot = None
-try:
     import group_ai_bot
 except ImportError:
     group_ai_bot = None
+
 AudioSegment.converter = "/opt/render/project/src/ffmpeg"
 API_ID = int(os.environ["API_ID"])
 API_HASH = os.environ["API_HASH"]
@@ -39,9 +32,7 @@ ACC2_DISPLAY_NAME = os.environ.get("ACC2_DISPLAY_NAME", "")
 OWNER_USERNAME = os.environ.get("OWNER_USERNAME", "Anopchenko2011")
 BACKUP_INTERVAL = int(os.environ.get("BACKUP_INTERVAL", "300"))
 BACKUP_KEY = os.environ.get("BACKUP_KEY", "")
-DEEPSEEK_KEYS = [key for key in (os.environ.get("DEEPSEEK_API_KEY", ""), os.environ.get("DEEPSEEK_API_KEY2", "")) if key]
-if not DEEPSEEK_KEYS:
-    DEEPSEEK_KEYS = [""]
+DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY", "")
 AI_MODEL = "deepseek-chat"
 AI_MAX_TOKENS = 200
 AI_TEMPERATURE = 0.7
@@ -105,7 +96,7 @@ ai_conversations = {}
 ai_chat_enabled = {}
 ai_stats = {"total_tokens": 0, "requests": 0, "daily": {}, "chats": {}}
 last_ai_response = {}
-custom_ai_token = DEEPSEEK_KEYS[0] if DEEPSEEK_KEYS[0] else ""
+custom_ai_token = DEEPSEEK_API_KEY
 HTML_LOGIN = (TEMPLATES_DIR / "login.html").read_text(encoding="utf-8")
 HTML_DASHBOARD = (TEMPLATES_DIR / "dashboard.html").read_text(encoding="utf-8")
 HTML_GUEST = (TEMPLATES_DIR / "guest.html").read_text(encoding="utf-8")
@@ -180,28 +171,21 @@ def update_ai_stats(tokens_used, chat_id=None):
     ai_stats["daily"][today] = ai_stats["daily"].get(today, 0) + tokens_used
     if chat_id: ai_stats["chats"][str(chat_id)] = ai_stats["chats"].get(str(chat_id), 0) + tokens_used
 def call_deepseek(messages, max_tokens=AI_MAX_TOKENS, temperature=AI_TEMPERATURE):
-    last_error = "No keys"
-    for key in DEEPSEEK_KEYS:
-        if not key: continue
-        headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
-        payload = {"model": AI_MODEL, "messages": messages, "max_tokens": max_tokens, "temperature": temperature}
-        try:
-            resp = requests.post("https://api.deepseek.com/v1/chat/completions", json=payload, headers=headers, timeout=30)
-            if resp.status_code == 200:
-                data = resp.json()
-                tokens = data.get("usage", {}).get("total_tokens", 0)
-                if tokens: update_ai_stats(tokens)
-                return data["choices"][0]["message"]["content"]
-            elif resp.status_code in (401, 429):
-                last_error = f"Key {key[:8]}... error {resp.status_code}"
-                continue
-            else:
-                last_error = f"API error {resp.status_code}"
-                continue
-        except Exception as e:
-            last_error = f"Network: {e}"
-            continue
-    return f"❌ All keys failed. Last: {last_error}"
+    if not DEEPSEEK_API_KEY:
+        return "❌ DEEPSEEK_API_KEY не задан."
+    headers = {"Authorization": f"Bearer {DEEPSEEK_API_KEY}", "Content-Type": "application/json"}
+    payload = {"model": AI_MODEL, "messages": messages, "max_tokens": max_tokens, "temperature": temperature}
+    try:
+        resp = requests.post("https://api.deepseek.com/v1/chat/completions", json=payload, headers=headers, timeout=30)
+        if resp.status_code == 200:
+            data = resp.json()
+            tokens = data.get("usage", {}).get("total_tokens", 0)
+            if tokens: update_ai_stats(tokens)
+            return data["choices"][0]["message"]["content"]
+        else:
+            return f"❌ Ошибка AI: {resp.status_code}"
+    except Exception as e:
+        return f"⚠️ Сетевая ошибка: {e}"
 def github_ai(query):
     messages = [{"role":"system","content":AI_SYSTEM_PROMPT},{"role":"user","content":query}]
     return call_deepseek(messages)
@@ -1099,32 +1083,16 @@ async def api_set_ai_token(request):
         add_log("AI", "Пользователь обновил AI-токен")
     return web.Response(text="OK")
 async def api_tdxt_start(request):
-    if tdxt_bot:
-        await tdxt_bot.start_tdxt()
-        return web.json_response({"status": "started"})
     return web.json_response({"status": "tdxt_bot not available"})
 async def api_tdxt_stop(request):
-    if tdxt_bot:
-        await tdxt_bot.stop_tdxt()
-        return web.json_response({"status": "stopped"})
     return web.json_response({"status": "tdxt_bot not available"})
 async def api_tdxt_status(request):
-    if tdxt_bot:
-        return web.json_response({"running": tdxt_bot.is_running})
     return web.json_response({"running": False})
 async def api_support_start(request):
-    if support_bot:
-        await support_bot.start_support()
-        return web.json_response({"status": "started"})
     return web.json_response({"status": "support_bot not available"})
 async def api_support_stop(request):
-    if support_bot:
-        await support_bot.stop_support()
-        return web.json_response({"status": "stopped"})
     return web.json_response({"status": "support_bot not available"})
 async def api_support_status(request):
-    if support_bot:
-        return web.json_response({"running": support_bot.is_running})
     return web.json_response({"running": False})
 async def api_groupai_start(request):
     if group_ai_bot:
@@ -1274,18 +1242,6 @@ async def main():
     await restore_state()
     asyncio.create_task(backup_loop())
     asyncio.create_task(schedule_runner())
-    if tdxt_bot and os.environ.get("TDXT_BOT_TOKEN"):
-        try:
-            await tdxt_bot.start_tdxt()
-            print("✅ TDXT бот запущен", flush=True)
-        except Exception as e:
-            print(f"⚠️ TDXT бот не запущен: {e}", flush=True)
-    if support_bot and os.environ.get("SUPPORT_BOT_TOKEN"):
-        try:
-            await support_bot.start_support()
-            print("✅ Support бот запущен", flush=True)
-        except Exception as e:
-            print(f"⚠️ Support бот не запущен: {e}", flush=True)
     if group_ai_bot and os.environ.get("GROUP_AI_BOT_TOKEN"):
         try:
             await group_ai_bot.start_group_ai()
