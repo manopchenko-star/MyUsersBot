@@ -1,14 +1,16 @@
 import asyncio, sqlite3, os, logging, json, aiohttp, random, io, re
 from datetime import datetime, timedelta
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, ContextTypes, filters
 from gtts import gTTS
 from duckduckgo_search import DDGS
 
 BOT_TOKEN = os.environ.get("GROUP_AI_BOT_TOKEN", "")
-GITHUB_TOKEN32 = os.environ.get("GITHUB_TOKEN32", "")
+DEEPSEEK_KEYS = [key for key in (os.environ.get("DEEPSEEK_API_KEY", ""), os.environ.get("DEEPSEEK_API_KEY2", "")) if key]
+if not DEEPSEEK_KEYS:
+    DEEPSEEK_KEYS = [""]
 FOUNDER_USERNAME = "Anopchenko2011"
-AI_MODEL = "gpt-4o-mini"
+AI_MODEL = "deepseek-chat"
 AI_MAX_TOKENS = 200
 AI_TEMPERATURE = 0.95
 BASE_SYSTEM_PROMPT = (
@@ -22,10 +24,8 @@ DATABASE = "group_ai_bot.db"
 
 context_data = {}
 last_random_time = {}
-group_admins = set()        # глобальные администраторы (user_id)
+group_admins = set()
 founder_id = None
-
-# Глобальные настройки (из БД)
 global_enabled = True
 use_emojis = True
 custom_system_prompt = BASE_SYSTEM_PROMPT
@@ -72,8 +72,7 @@ def init_db():
     c.execute("INSERT OR IGNORE INTO global_settings (key, value) VALUES ('global_enabled', '1')")
     c.execute("INSERT OR IGNORE INTO global_settings (key, value) VALUES ('use_emojis', '1')")
     c.execute("INSERT OR IGNORE INTO global_settings (key, value) VALUES ('system_prompt', ?)", (BASE_SYSTEM_PROMPT,))
-    conn.commit()
-    conn.close()
+    conn.commit(); conn.close()
 
 def load_global_settings():
     global global_enabled, use_emojis, custom_system_prompt
@@ -88,8 +87,7 @@ def load_global_settings():
 def set_global_setting(key, value):
     conn = get_db(); c = conn.cursor()
     c.execute("INSERT OR REPLACE INTO global_settings (key, value) VALUES (?, ?)", (key, str(value)))
-    conn.commit()
-    conn.close()
+    conn.commit(); conn.close()
     load_global_settings()
 
 def load_admins():
@@ -125,16 +123,9 @@ def get_group_settings(chat_id):
     c.execute("SELECT enabled, random_tts, random_video, interval_minutes, nsfw FROM group_settings WHERE chat_id=?", (chat_id,))
     row = c.fetchone()
     if row:
-        return {
-            "enabled": bool(row[0]),
-            "random_tts": bool(row[1]),
-            "random_video": bool(row[2]),
-            "interval": row[3],
-            "nsfw": bool(row[4])
-        }
-    conn.close()
+        return {"enabled":bool(row[0]), "random_tts":bool(row[1]), "random_video":bool(row[2]), "interval":row[3], "nsfw":bool(row[4])}
     set_group_setting(chat_id, "enabled", 1)
-    return {"enabled": True, "random_tts": False, "random_video": False, "interval": 60, "nsfw": False}
+    return {"enabled":True, "random_tts":False, "random_video":False, "interval":60, "nsfw":False}
 
 def set_group_setting(chat_id, key, value):
     conn = get_db(); c = conn.cursor()
@@ -179,8 +170,6 @@ def is_founder(username):
     return username and username.lower() == FOUNDER_USERNAME.lower()
 
 async def ask_ai(prompt, chat_id=None, context=[]):
-    if not GITHUB_TOKEN32:
-        return "❌ GITHUB_TOKEN32 не задан."
     sys = custom_system_prompt
     if not use_emojis:
         sys += " Не используй смайлики и эмодзи."
@@ -188,22 +177,31 @@ async def ask_ai(prompt, chat_id=None, context=[]):
         settings = get_group_settings(chat_id)
         if settings.get("nsfw", False):
             sys += " Можно обсуждать взрослые темы, использовать нецензурную лексику в разумных пределах, но не нарушая законы."
-    headers = {"Authorization": f"Bearer {GITHUB_TOKEN32}", "Content-Type": "application/json"}
     messages = [{"role":"system","content":sys}]
     for entry in context[-6:]:
         messages.append(entry)
     messages.append({"role":"user","content":prompt})
-    payload = {"model":AI_MODEL, "messages":messages, "max_tokens":AI_MAX_TOKENS, "temperature":AI_TEMPERATURE}
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.post("https://models.inference.ai.azure.com/chat/completions", json=payload, headers=headers, timeout=30) as resp:
-                if resp.status == 200:
-                    data = await resp.json()
-                    return data["choices"][0]["message"]["content"]
-                else:
-                    return f"⚠️ Ошибка AI: {resp.status}"
-    except Exception as e:
-        return f"⚠️ Сетевая ошибка: {e}"
+    last_error = "No keys"
+    for key in DEEPSEEK_KEYS:
+        if not key: continue
+        headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
+        payload = {"model": AI_MODEL, "messages": messages, "max_tokens": AI_MAX_TOKENS, "temperature": AI_TEMPERATURE}
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post("https://api.deepseek.com/v1/chat/completions", json=payload, headers=headers, timeout=30) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        return data["choices"][0]["message"]["content"]
+                    elif resp.status in (401, 429):
+                        last_error = f"Key {key[:8]}... error {resp.status}"
+                        continue
+                    else:
+                        last_error = f"API error {resp.status}"
+                        continue
+        except Exception as e:
+            last_error = f"Network: {e}"
+            continue
+    return f"❌ All keys failed. Last: {last_error}"
 
 async def generate_tts(text):
     try:
@@ -224,7 +222,6 @@ async def search_video(query):
     except:
         return None
 
-# ---------- Панель основателя (личка) ----------
 def founder_main_menu():
     keyboard = [
         [InlineKeyboardButton("📊 Группы", callback_data="founder_groups")],
@@ -253,7 +250,6 @@ async def founder_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_founder(query.from_user.username):
         return await query.answer("⛔ Нет доступа.", show_alert=True)
     data = query.data
-
     if data == "founder_refresh":
         load_global_settings()
         await query.edit_message_text("🔧 Панель управления ботом", reply_markup=founder_main_menu())
@@ -328,7 +324,6 @@ async def founder_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not action:
         await update.message.reply_text("Используйте /start для панели управления.")
         return
-
     if action == 'change_prompt':
         set_global_setting("system_prompt", text)
         await update.message.reply_text("✅ Системный промпт обновлён.")
@@ -361,7 +356,7 @@ async def founder_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         add_group_admin(chat_id, user_id)
         await update.message.reply_text(f"✅ Пользователь {user_id} теперь модератор группы {chat_id}.")
     context.user_data.pop('action', None)
-    # После выполнения возвращаемся в главное меню
+    # возвращаем меню после выполнения действия
     await update.message.reply_text("🔧 Панель управления ботом", reply_markup=founder_main_menu())
 
 # ---------- Групповые команды ----------
@@ -428,7 +423,21 @@ async def tts_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await update.message.reply_text("Не удалось создать голосовое сообщение.")
 
-# ---------- Модераторские команды в группах ----------
+# ---------- Команды управления ботом ----------
+async def enable_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    if not is_admin(update.effective_user.id, chat_id):
+        await update.message.reply_text("⛔ Только модератор."); return
+    set_group_setting(chat_id, "enabled", 1)
+    await update.message.reply_text("✅ Бот включён в этом чате.")
+
+async def disable_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    if not is_admin(update.effective_user.id, chat_id):
+        await update.message.reply_text("⛔ Только модератор."); return
+    set_group_setting(chat_id, "enabled", 0)
+    await update.message.reply_text("❌ Бот выключен.")
+
 async def settings_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     if not is_admin(update.effective_user.id, chat_id):
@@ -525,11 +534,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if not global_enabled:
         return
-
     settings = get_group_settings(chat_id)
     if not settings['enabled']:
         return
-
     if context.user_data.get('waiting_interval') and is_admin(user.id, chat_id):
         text = update.message.text.strip()
         try:
@@ -549,7 +556,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         mentioned = True
     if update.message.reply_to_message and update.message.reply_to_message.from_user.id == context.bot.id:
         mentioned = True
-
     if not mentioned:
         return
 
@@ -630,8 +636,9 @@ async def start_group_ai():
     conn.close()
 
     app = Application.builder().token(BOT_TOKEN).build()
-
+    # Личные сообщения основателя
     app.add_handler(MessageHandler(filters.TEXT & filters.ChatType.PRIVATE & filters.User(username=FOUNDER_USERNAME), founder_message))
+    # Команды
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("meme", meme_cmd))
     app.add_handler(CommandHandler("joke", joke_cmd))
@@ -639,12 +646,17 @@ async def start_group_ai():
     app.add_handler(CommandHandler("sounds", list_sounds_cmd))
     app.add_handler(CommandHandler("video_meme", video_meme_cmd))
     app.add_handler(CommandHandler("tts", tts_cmd))
+    app.add_handler(CommandHandler("enable", enable_cmd))
+    app.add_handler(CommandHandler("disable", disable_cmd))
     app.add_handler(CommandHandler("settings", settings_cmd))
     app.add_handler(CommandHandler("nsfw", nsfw_cmd))
     app.add_handler(CommandHandler("mod", mod_cmd))
     app.add_handler(CommandHandler("help", start))
+    # Callback панели основателя
     app.add_handler(CallbackQueryHandler(founder_callback, pattern="^founder_"))
+    # Callback настроек группы
     app.add_handler(CallbackQueryHandler(settings_callback, pattern="^(toggle_tts|toggle_video|change_interval|close_settings|toggle_nsfw)$"))
+    # Групповые сообщения
     app.add_handler(MessageHandler(filters.TEXT & (filters.ChatType.GROUPS | filters.ChatType.SUPERGROUP), handle_message))
 
     asyncio.create_task(random_sender(app))
