@@ -189,6 +189,22 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("ℹ️ Я могу ответить на вопросы по игре, помочь с проблемами входа. Если нужен живой оператор, нажмите «🆘 Поддержка».")
 
+# ======= Добавлена отсутствующая функция =======
+async def cmd_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_admin(update.effective_user.id):
+        await update.message.reply_text("⛔ Только администратор.")
+        return
+    users = get_all_users()
+    if not users:
+        await update.message.reply_text("Нет зарегистрированных пользователей.")
+        return
+    text = "👥 Зарегистрированные пользователи:\n"
+    for i, (uid, uname) in enumerate(users, 1):
+        name = f"@{uname}" if uname else f"ID:{uid}"
+        text += f"{i}. {name}\n"
+    await update.message.reply_text(text)
+# ===============================================
+
 async def support_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     kb = InlineKeyboardMarkup([[InlineKeyboardButton("📞 Связаться с оператором", callback_data="req_operator")]])
     await update.message.reply_text("Нажмите кнопку, чтобы создать заявку для оператора.", reply_markup=kb)
@@ -496,7 +512,7 @@ async def start_support():
     app.add_handler(CallbackQueryHandler(remove_admin_callback, pattern="^remove_admin$"))
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_cmd))
-    app.add_handler(CommandHandler("user", cmd_users))
+    app.add_handler(CommandHandler("user", cmd_users))   # теперь функция определена
     await app.initialize()
     await app.start()
     polling_task = asyncio.create_task(app.updater.start_polling())
