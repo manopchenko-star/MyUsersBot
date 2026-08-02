@@ -32,8 +32,7 @@ ACC2_DISPLAY_NAME = os.environ.get("ACC2_DISPLAY_NAME", "")
 OWNER_USERNAME = os.environ.get("OWNER_USERNAME", "Anopchenko2011")
 BACKUP_INTERVAL = int(os.environ.get("BACKUP_INTERVAL", "300"))
 BACKUP_KEY = os.environ.get("BACKUP_KEY", "")
-GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN", "")
-AI_MODEL = os.environ.get("GITHUB_MODEL", "gpt-4o-mini")
+AI_MODEL = os.environ.get("AI_MODEL", "deepseek-chat")
 AI_MAX_TOKENS = 200
 AI_TEMPERATURE = 0.7
 AI_SYSTEM_PROMPT = "Ты — дружелюбный собеседник. Отвечай кратко, разговорным стилем, без примеров и лишних объяснений. Если что-то непонятно — уточни, но не пиши эссе."
@@ -55,6 +54,14 @@ SCHEDULE_FILE = Path("schedule.json")
 LAST_MSG_FILE = Path("last_backup_msg.json")
 AI_TOKEN_FILE = Path("ai_token.json")
 TEMPLATES_DIR = Path("templates")
+
+DEEPSEEK_KEYS = []
+for var in ("DEEPSEEK_API_KEY", "DEEPSEEK_API_KEY2"):
+    key = os.environ.get(var, "")
+    if key:
+        DEEPSEEK_KEYS.append(key)
+if not DEEPSEEK_KEYS:
+    DEEPSEEK_KEYS = [""]
 
 if BACKUP_KEY:
     ENCRYPTION_KEY = base64.urlsafe_b64encode(hashlib.sha256(BACKUP_KEY.encode()).digest())
@@ -100,7 +107,7 @@ ai_conversations = {}
 ai_chat_enabled = {}
 ai_stats = {"total_tokens": 0, "requests": 0, "daily": {}, "chats": {}}
 last_ai_response = {}
-custom_ai_token = GITHUB_TOKEN if GITHUB_TOKEN else ""
+custom_ai_token = DEEPSEEK_KEYS[0] if DEEPSEEK_KEYS[0] else ""
 
 HTML_LOGIN = (TEMPLATES_DIR / "login.html").read_text(encoding="utf-8")
 HTML_DASHBOARD = (TEMPLATES_DIR / "dashboard.html").read_text(encoding="utf-8")
@@ -184,42 +191,40 @@ def update_ai_stats(tokens_used, chat_id=None):
     ai_stats["daily"][today] = ai_stats["daily"].get(today, 0) + tokens_used
     if chat_id: ai_stats["chats"][str(chat_id)] = ai_stats["chats"].get(str(chat_id), 0) + tokens_used
 
+async def call_deepseek(messages, max_tokens=AI_MAX_TOKENS, temperature=AI_TEMPERATURE):
+    last_error = "No keys"
+    for key in DEEPSEEK_KEYS:
+        if not key: continue
+        headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
+        payload = {"model": AI_MODEL, "messages": messages, "max_tokens": max_tokens, "temperature": temperature}
+        try:
+            resp = await asyncio.get_event_loop().run_in_executor(None, lambda: requests.post("https://api.deepseek.com/v1/chat/completions", json=payload, headers=headers, timeout=30))
+            if resp.status_code == 200:
+                data = resp.json()
+                tokens = data.get("usage", {}).get("total_tokens", 0)
+                if tokens: update_ai_stats(tokens)
+                return data["choices"][0]["message"]["content"]
+            elif resp.status_code in (401, 429):
+                last_error = f"Key {key[:8]}... error {resp.status_code}"
+                continue
+            else:
+                last_error = f"API error {resp.status_code}"
+                continue
+        except Exception as e:
+            last_error = f"Network: {e}"
+            continue
+    return f"❌ All keys failed. Last: {last_error}"
+
 def github_ai(query, model=AI_MODEL, max_tokens=AI_MAX_TOKENS):
-    if not custom_ai_token: return "❌ API ключ не задан. Введите его во вкладке «AI Token»."
-    url = "https://models.inference.ai.azure.com/chat/completions"
-    headers = {"Authorization": f"Bearer {custom_ai_token}", "Content-Type": "application/json"}
-    payload = {"model": model, "messages": [{"role": "system", "content": AI_SYSTEM_PROMPT}, {"role": "user", "content": query}], "max_tokens": max_tokens, "temperature": AI_TEMPERATURE}
-    try:
-        resp = requests.post(url, json=payload, headers=headers, timeout=30)
-        if resp.status_code == 200:
-            data = resp.json()
-            tokens = data.get("usage", {}).get("total_tokens", 0)
-            if tokens: update_ai_stats(tokens)
-            return data["choices"][0]["message"]["content"]
-        else: return f"❌ Ошибка AI: {resp.status_code}"
-    except Exception as e: return f"⚠️ Сетевая ошибка: {e}"
+    messages = [{"role":"system","content":AI_SYSTEM_PROMPT},{"role":"user","content":query}]
+    return asyncio.get_event_loop().run_until_complete(call_deepseek(messages, max_tokens, AI_TEMPERATURE))
 
 def github_ai_chat(chat_id, user_message):
-    if not custom_ai_token: return "❌ API ключ не задан. Введите его во вкладке «AI Token»."
-    if chat_id not in ai_conversations: ai_conversations[chat_id] = [{"role": "system", "content": AI_SYSTEM_PROMPT}]
+    if chat_id not in ai_conversations: ai_conversations[chat_id] = [{"role":"system","content":AI_SYSTEM_PROMPT}]
     history = ai_conversations[chat_id]
-    history.append({"role": "user", "content": user_message})
+    history.append({"role":"user","content":user_message})
     if len(history) > 11: history = [history[0]] + history[-10:]; ai_conversations[chat_id] = history
-    url = "https://models.inference.ai.azure.com/chat/completions"
-    headers = {"Authorization": f"Bearer {custom_ai_token}", "Content-Type": "application/json"}
-    payload = {"model": AI_MODEL, "messages": history, "max_tokens": AI_MAX_TOKENS, "temperature": AI_TEMPERATURE}
-    try:
-        resp = requests.post(url, json=payload, headers=headers, timeout=30)
-        if resp.status_code == 200:
-            data = resp.json()
-            tokens = data.get("usage", {}).get("total_tokens", 0)
-            if tokens: update_ai_stats(tokens, chat_id)
-            answer = data["choices"][0]["message"]["content"]
-            history.append({"role": "assistant", "content": answer})
-            ai_conversations[chat_id] = history
-            return answer
-        else: return f"❌ Ошибка AI: {resp.status_code}"
-    except Exception as e: return f"⚠️ Сетевая ошибка: {e}"
+    return asyncio.get_event_loop().run_until_complete(call_deepseek(history, AI_MAX_TOKENS, AI_TEMPERATURE))
 
 async def cleanup_old_backups():
     global last_backup_msg_id
@@ -375,7 +380,6 @@ async def init_protected_users():
     except Exception as e: add_log("WARN", f"Не удалось найти владельца {OWNER_USERNAME}: {e}")
     save_state(); await broadcast_state(); await backup_state()
 
-# ---------- Обработчики команд (полный набор) ----------
 def register_handlers(client_instance):
     @client_instance.on(events.NewMessage(outgoing=True, pattern=r'^\.mute$'))
     async def mute_cmd(event):
@@ -705,7 +709,6 @@ def register_handlers(client_instance):
         text = "📝 **Последние удалённые сообщения:**\n" + "\n".join(f"• {m}" for m in recent)
         await event.client.send_message(event.chat_id, text); await event.delete()
 
-    # AI команды
     @client_instance.on(events.NewMessage(outgoing=True, pattern=r'^\.ai\s+on$'))
     async def ai_on_cmd(event):
         global ai_auto_reply_enabled
@@ -845,7 +848,6 @@ register_handlers(client1)
 if client2: register_handlers(client2)
 for client_info in extra_clients.values(): register_handlers(client_info["client"])
 
-# ---------- Веб-обработчики ----------
 async def check_auth(request):
     auth = request.headers.get("Authorization")
     if auth and auth.startswith("Basic "):
@@ -1061,7 +1063,6 @@ async def guest_ws_handler(request):
     await ws.send_str(json.dumps(data, default=str, ensure_ascii=False)); await ws.close()
     return ws
 
-# API
 async def api_notes(request):
     if request.method == 'POST':
         data = await request.post(); global notes; notes = data.get('notes', ''); save_notes(); await broadcast_state()
@@ -1320,7 +1321,6 @@ async def main():
         try: await client2.start(); add_log("INFO", "✅ Аккаунт 2 запущен")
         except Exception as e: add_log("ERROR", f"Не удалось запустить второй аккаунт: {e}"); client2 = None
 
-    # Создаём и запускаем бота авторизации
     bot = None
     if BOT_TOKEN:
         bot = TelegramClient(StringSession(), API_ID, API_HASH)
@@ -1406,17 +1406,14 @@ async def main():
     asyncio.create_task(backup_loop())
     asyncio.create_task(schedule_runner())
 
-    # Автозапуск TDXT бота
     if os.environ.get("TDXT_BOT_TOKEN"):
         await tdxt_bot.start_tdxt()
         add_log("TDXT", "TDXT бот автоматически запущен")
 
-    # Автозапуск Support бота
     if os.environ.get("SUPPORT_BOT_TOKEN"):
         await support_bot.start_support()
         add_log("SUPPORT", "Support бот автоматически запущен")
 
-    # Автозапуск Group AI бота
     if os.environ.get("GROUP_AI_BOT_TOKEN"):
         await group_ai_bot.start_group_ai()
         add_log("GROUP_AI", "Group AI бот автоматически запущен")
