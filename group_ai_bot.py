@@ -6,9 +6,9 @@ from gtts import gTTS
 from duckduckgo_search import DDGS
 
 BOT_TOKEN = os.environ.get("GROUP_AI_BOT_TOKEN", "")
-DEEPSEEK_KEYS = [key for key in (os.environ.get("DEEPSEEK_API_KEY", ""), os.environ.get("DEEPSEEK_API_KEY2", "")) if key]
-if not DEEPSEEK_KEYS:
-    DEEPSEEK_KEYS = [""]
+DEEPSEEK_API_KEY2 = os.environ.get("DEEPSEEK_API_KEY2", "")
+if not DEEPSEEK_API_KEY2:
+    raise RuntimeError("DEEPSEEK_API_KEY2 не задан!")
 FOUNDER_USERNAME = "Anopchenko2011"
 AI_MODEL = "deepseek-chat"
 AI_MAX_TOKENS = 200
@@ -170,6 +170,8 @@ def is_founder(username):
     return username and username.lower() == FOUNDER_USERNAME.lower()
 
 async def ask_ai(prompt, chat_id=None, context=[]):
+    if not DEEPSEEK_API_KEY2:
+        return "❌ DEEPSEEK_API_KEY2 не задан."
     sys = custom_system_prompt
     if not use_emojis:
         sys += " Не используй смайлики и эмодзи."
@@ -181,27 +183,18 @@ async def ask_ai(prompt, chat_id=None, context=[]):
     for entry in context[-6:]:
         messages.append(entry)
     messages.append({"role":"user","content":prompt})
-    last_error = "No keys"
-    for key in DEEPSEEK_KEYS:
-        if not key: continue
-        headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
-        payload = {"model": AI_MODEL, "messages": messages, "max_tokens": AI_MAX_TOKENS, "temperature": AI_TEMPERATURE}
-        try:
-            async with aiohttp.ClientSession() as session:
-                async with session.post("https://api.deepseek.com/v1/chat/completions", json=payload, headers=headers, timeout=30) as resp:
-                    if resp.status == 200:
-                        data = await resp.json()
-                        return data["choices"][0]["message"]["content"]
-                    elif resp.status in (401, 429):
-                        last_error = f"Key {key[:8]}... error {resp.status}"
-                        continue
-                    else:
-                        last_error = f"API error {resp.status}"
-                        continue
-        except Exception as e:
-            last_error = f"Network: {e}"
-            continue
-    return f"❌ All keys failed. Last: {last_error}"
+    headers = {"Authorization": f"Bearer {DEEPSEEK_API_KEY2}", "Content-Type": "application/json"}
+    payload = {"model": AI_MODEL, "messages": messages, "max_tokens": AI_MAX_TOKENS, "temperature": AI_TEMPERATURE}
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post("https://api.deepseek.com/v1/chat/completions", json=payload, headers=headers, timeout=30) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    return data["choices"][0]["message"]["content"]
+                else:
+                    return f"⚠️ Ошибка AI: {resp.status}"
+    except Exception as e:
+        return f"⚠️ Сетевая ошибка: {e}"
 
 async def generate_tts(text):
     try:
@@ -356,10 +349,8 @@ async def founder_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         add_group_admin(chat_id, user_id)
         await update.message.reply_text(f"✅ Пользователь {user_id} теперь модератор группы {chat_id}.")
     context.user_data.pop('action', None)
-    # возвращаем меню после выполнения действия
     await update.message.reply_text("🔧 Панель управления ботом", reply_markup=founder_main_menu())
 
-# ---------- Групповые команды ----------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.type == "private":
         if is_founder(update.effective_user.username):
@@ -423,7 +414,6 @@ async def tts_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await update.message.reply_text("Не удалось создать голосовое сообщение.")
 
-# ---------- Команды управления ботом ----------
 async def enable_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     if not is_admin(update.effective_user.id, chat_id):
@@ -524,7 +514,6 @@ async def mod_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         remove_group_admin(chat_id, target_id)
         await update.message.reply_text(f"❌ Пользователь {target_id} удалён из модераторов.")
 
-# ---------- Обработка сообщений в группах ----------
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.type not in ("group", "supergroup"):
         return
@@ -576,7 +565,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context_data[chat_id].append({"role":"assistant","content":answer})
     await update.message.reply_text(answer)
 
-# ---------- Случайные отправки ----------
 async def random_sender(app: Application):
     while True:
         await asyncio.sleep(60)
@@ -615,7 +603,6 @@ async def random_sender(app: Application):
         except Exception as e:
             logging.error(f"Random sender error: {e}")
 
-# ---------- Управление ботом ----------
 is_running = False
 application = None
 polling_task = None
@@ -636,9 +623,7 @@ async def start_group_ai():
     conn.close()
 
     app = Application.builder().token(BOT_TOKEN).build()
-    # Личные сообщения основателя
     app.add_handler(MessageHandler(filters.TEXT & filters.ChatType.PRIVATE & filters.User(username=FOUNDER_USERNAME), founder_message))
-    # Команды
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("meme", meme_cmd))
     app.add_handler(CommandHandler("joke", joke_cmd))
@@ -652,15 +637,10 @@ async def start_group_ai():
     app.add_handler(CommandHandler("nsfw", nsfw_cmd))
     app.add_handler(CommandHandler("mod", mod_cmd))
     app.add_handler(CommandHandler("help", start))
-    # Callback панели основателя
     app.add_handler(CallbackQueryHandler(founder_callback, pattern="^founder_"))
-    # Callback настроек группы
     app.add_handler(CallbackQueryHandler(settings_callback, pattern="^(toggle_tts|toggle_video|change_interval|close_settings|toggle_nsfw)$"))
-    # Групповые сообщения
     app.add_handler(MessageHandler(filters.TEXT & (filters.ChatType.GROUPS | filters.ChatType.SUPERGROUP), handle_message))
-
     asyncio.create_task(random_sender(app))
-
     await app.initialize()
     await app.start()
     polling_task = asyncio.create_task(app.updater.start_polling())
