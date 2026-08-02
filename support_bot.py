@@ -4,9 +4,11 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKe
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
 
 BOT_TOKEN = os.environ.get("SUPPORT_BOT_TOKEN", "")
-GITHUB_HELP = os.environ.get("GITHUB_HELP", "")
+DEEPSEEK_KEYS = [key for key in (os.environ.get("DEEPSEEK_API_KEY", ""), os.environ.get("DEEPSEEK_API_KEY2", "")) if key]
+if not DEEPSEEK_KEYS:
+    DEEPSEEK_KEYS = [""]
 MAIN_ADMIN_USERNAME = "Anopchenko2011"
-AI_MODEL = "gpt-4o-mini"
+AI_MODEL = "deepseek-chat"
 AI_MAX_TOKENS = 300
 AI_TEMPERATURE = 0.7
 AI_SYSTEM_PROMPT = (
@@ -35,6 +37,7 @@ def init_db():
         operator_id INTEGER, created_at TEXT, closed_at TEXT,
         ai_tag TEXT DEFAULT '')''')
     c.execute("INSERT OR IGNORE INTO admins (user_id, username) VALUES (0, ?)", (MAIN_ADMIN_USERNAME,))
+    c.execute("INSERT OR IGNORE INTO admins (user_id, username) VALUES (0, 'IxWixys')")
     conn.commit(); conn.close()
 
 def is_admin(user_id):
@@ -49,31 +52,45 @@ def add_user(user_id, username):
     c.execute("INSERT OR IGNORE INTO users VALUES (?,?)", (user_id, username))
     conn.commit(); conn.close()
 
-def get_all_user_ids():
+def get_all_admin_ids():
     conn = get_db(); c = conn.cursor()
-    c.execute("SELECT user_id FROM users"); ids=[row[0] for row in c.fetchall()]; conn.close(); return ids
+    c.execute("SELECT user_id FROM admins WHERE user_id != 0")
+    ids = [row[0] for row in c.fetchall()]
+    conn.close()
+    return ids
+
+def get_all_users():
+    conn = get_db(); c = conn.cursor()
+    c.execute("SELECT user_id, username FROM users")
+    users = c.fetchall()
+    conn.close()
+    return users
 
 def create_ticket(user_id, username, question, ai_tag=""):
     conn = get_db(); c = conn.cursor()
     now = datetime.now().isoformat()
     c.execute("INSERT INTO tickets (user_id, username, question, status, created_at, ai_tag) VALUES (?,?,?,'open',?,?)",
               (user_id, username, question, now, ai_tag))
-    tid = c.lastrowid; conn.commit(); conn.close(); return tid
+    tid = c.lastrowid; conn.commit(); conn.close()
+    return tid
 
 def get_open_tickets():
     conn = get_db(); c = conn.cursor()
     c.execute("SELECT id, user_id, username, question, created_at FROM tickets WHERE status='open' ORDER BY id")
-    rows = c.fetchall(); conn.close(); return rows
+    rows = c.fetchall(); conn.close()
+    return rows
 
 def get_underage_tickets():
     conn = get_db(); c = conn.cursor()
     c.execute("SELECT id, user_id, username, question, created_at FROM tickets WHERE status='open' AND ai_tag='underage' ORDER BY id")
-    rows = c.fetchall(); conn.close(); return rows
+    rows = c.fetchall(); conn.close()
+    return rows
 
 def get_last_open_ticket(user_id):
     conn = get_db(); c = conn.cursor()
     c.execute("SELECT id FROM tickets WHERE user_id=? AND status='open' ORDER BY id DESC LIMIT 1", (user_id,))
-    row = c.fetchone(); conn.close(); return row[0] if row else None
+    row = c.fetchone(); conn.close()
+    return row[0] if row else None
 
 def set_ticket_tag(ticket_id, tag):
     conn = get_db(); c = conn.cursor()
@@ -94,18 +111,18 @@ def close_ticket(ticket_id):
 def get_ticket(ticket_id):
     conn = get_db(); c = conn.cursor()
     c.execute("SELECT * FROM tickets WHERE id=?", (ticket_id,))
-    row = c.fetchone(); conn.close(); return row
+    row = c.fetchone(); conn.close()
+    return row
 
 def add_admin_to_db(user_id, username):
     conn = get_db(); c = conn.cursor()
     c.execute("INSERT OR IGNORE INTO admins (user_id, username) VALUES (?,?)", (user_id, username))
     conn.commit(); conn.close()
 
-def update_admin_id(username, user_id):
+def update_admin_id(username, new_id):
     conn = get_db(); c = conn.cursor()
-    # Удаляем запись с -1 и вставляем правильную
     c.execute("DELETE FROM admins WHERE username=? AND user_id=-1", (username,))
-    c.execute("INSERT OR IGNORE INTO admins (user_id, username) VALUES (?,?)", (user_id, username))
+    c.execute("INSERT OR IGNORE INTO admins (user_id, username) VALUES (?,?)", (new_id, username))
     conn.commit(); conn.close()
 
 def remove_admin_from_db(user_id):
@@ -114,18 +131,28 @@ def remove_admin_from_db(user_id):
     conn.commit(); conn.close()
 
 async def ask_ai(prompt):
-    if not GITHUB_HELP: return "❌ API-ключ не задан."
-    headers = {"Authorization": f"Bearer {GITHUB_HELP}", "Content-Type": "application/json"}
-    payload = {"model": AI_MODEL, "messages": [{"role":"system","content":AI_SYSTEM_PROMPT},{"role":"user","content":prompt}],
-               "max_tokens": AI_MAX_TOKENS, "temperature": AI_TEMPERATURE}
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.post("https://models.inference.ai.azure.com/chat/completions", json=payload, headers=headers, timeout=30) as resp:
-                if resp.status == 200:
-                    data = await resp.json()
-                    return data["choices"][0]["message"]["content"]
-                else: return "⚠️ Ошибка AI"
-    except Exception as e: return f"⚠️ Сетевая ошибка: {e}"
+    messages = [{"role":"system","content":AI_SYSTEM_PROMPT},{"role":"user","content":prompt}]
+    last_error = "No keys"
+    for key in DEEPSEEK_KEYS:
+        if not key: continue
+        headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
+        payload = {"model": AI_MODEL, "messages": messages, "max_tokens": AI_MAX_TOKENS, "temperature": AI_TEMPERATURE}
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post("https://api.deepseek.com/v1/chat/completions", json=payload, headers=headers, timeout=30) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        return data["choices"][0]["message"]["content"]
+                    elif resp.status in (401, 429):
+                        last_error = f"Key {key[:8]}... error {resp.status}"
+                        continue
+                    else:
+                        last_error = f"API error {resp.status}"
+                        continue
+        except Exception as e:
+            last_error = f"Network: {e}"
+            continue
+    return f"❌ All keys failed. Last: {last_error}"
 
 def user_keyboard():
     return ReplyKeyboardMarkup([[KeyboardButton("🆘 Поддержка")], [KeyboardButton("📋 Мои тикеты")]], resize_keyboard=True)
@@ -143,15 +170,17 @@ def operator_chat_keyboard():
         [KeyboardButton("🧪 Тестовый режим"), KeyboardButton("🔙 Выйти без закрытия")]
     ], resize_keyboard=True)
 
-# ---------- Обработчики кнопок ----------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     add_user(user.id, user.username or "unknown")
     if user.username and is_main_admin(user.username):
         add_admin_to_db(user.id, user.username)
-    # Если новый админ был добавлен через кнопку, его username уже в базе с id=-1
     if user.username:
-        update_admin_id(user.username, user.id)
+        conn = get_db(); c = conn.cursor()
+        c.execute("SELECT 1 FROM admins WHERE username=? AND user_id=-1", (user.username,))
+        if c.fetchone():
+            update_admin_id(user.username, user.id)
+        conn.close()
     if is_admin(user.id):
         await update.message.reply_text("👑 Панель администратора поддержки.", reply_markup=admin_keyboard())
     else:
@@ -201,10 +230,8 @@ async def underage_tickets_button(update: Update, context: ContextTypes.DEFAULT_
     keyboard = []
     for t in tickets:
         tid, uid, uname, q, _ = t
-        # Пытаемся извлечь ник из вопроса (после слова "ник:")
         nick = "не указан"
-        if "ник:" in q.lower():
-            nick = q.split("ник:")[-1].strip().split()[0]
+        if "ник:" in q.lower(): nick = q.split("ник:")[-1].strip().split()[0]
         text += f"#{tid} @{uname} (ник: {nick})\n"
         keyboard.append([InlineKeyboardButton(f"✉️ Помочь #{tid}", callback_data=f"take_{tid}")])
     await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
@@ -257,9 +284,9 @@ async def req_operator_callback(update: Update, context: ContextTypes.DEFAULT_TY
     user = query.from_user
     ticket_id = create_ticket(user.id, user.username or "unknown", "Запрос оператора (нажата кнопка)")
     await query.edit_message_text("✅ Ваш запрос передан оператору. Ожидайте ответа.")
-    for uid in get_all_user_ids():
-        if is_admin(uid) and uid != user.id:
-            try: await context.bot.send_message(uid, f"🔔 Новый тикет #{ticket_id} от @{user.username or user.id}.")
+    for admin_id in get_all_admin_ids():
+        if admin_id != user.id:
+            try: await context.bot.send_message(admin_id, f"🔔 Новый тикет #{ticket_id} от @{user.username or user.id}.")
             except: pass
 
 async def end_chat_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -280,8 +307,12 @@ async def test_mode_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("⛔ Только для администраторов.")
         return
     test_mode_users.add(user.id)
-    await update.message.reply_text("🧪 Вы вошли в тестовый режим. Нажмите «🔙 Выйти из теста», чтобы вернуться.",
-                                    reply_markup=ReplyKeyboardMarkup([[KeyboardButton("🔙 Выйти из теста")]], resize_keyboard=True))
+    if user.id in user_chat_admin:
+        await update.message.reply_text("🧪 Вы вошли в тестовый режим. Нажмите «🔙 Выйти из теста», чтобы вернуться.",
+                                        reply_markup=ReplyKeyboardMarkup([[KeyboardButton("🔙 Выйти из теста")]], resize_keyboard=True))
+    else:
+        await update.message.reply_text("🧪 Вы вошли в тестовый режим. Используйте клавиатуру пользователя. Для выхода нажмите «🔙 Выйти из теста».",
+                                        reply_markup=ReplyKeyboardMarkup([[KeyboardButton("🔙 Выйти из теста")]], resize_keyboard=True))
 
 async def exit_without_close_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -336,7 +367,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not username:
             await update.message.reply_text("Некорректный формат. Отмена."); return
         if action == 'add_admin':
-            # Сохраняем админа с временным id=-1, он обновится при его /start
             add_admin_to_db(-1, username)
             await update.message.reply_text(f"✅ @{username} добавлен в список ожидания. Попросите его запустить /start.")
         elif action == 'remove_admin':
@@ -378,28 +408,20 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_bot_enabled:
         await update.message.reply_text("Бот временно недоступен."); return
 
-    # Основная логика общения с ИИ
     answer = await ask_ai(msg)
-    # Если ИИ отправил пользователя вступать в группу – создаём тикет с тегом underage
     if "вступите в нашу группу" in answer.lower() or "Defense-mans" in answer:
-        # Создаём тикет только если ещё нет открытого с таким тегом
         existing = get_last_open_ticket(user.id)
         need_create = True
         if existing:
-            # Проверим тег существующего тикета
             ticket = get_ticket(existing)
             if ticket and ticket[7] == 'underage':
                 need_create = False
         if need_create:
-            # В качестве вопроса сохраняем исходное сообщение пользователя
             tid = create_ticket(user.id, user.username or "unknown", f"Проблема со входом: {msg}", ai_tag="underage")
-            # Оповещаем всех админов
-            for uid in get_all_user_ids():
-                if is_admin(uid) and uid != user.id:
-                    try:
-                        await context.bot.send_message(uid, f"🔔 Новый тикет #{tid} (проблема возраста) от @{user.username or user.id}.")
+            for admin_id in get_all_admin_ids():
+                if admin_id != user.id:
+                    try: await context.bot.send_message(admin_id, f"🔔 Новый тикет #{tid} (проблема возраста) от @{user.username or user.id}.")
                     except: pass
-
     if "оператор" in answer.lower() or "свяжитесь с оператором" in answer.lower():
         kb = InlineKeyboardMarkup([[InlineKeyboardButton("📞 Связаться с оператором", callback_data="req_operator")]])
         await update.message.reply_text(answer + "\n\nИли нажмите кнопку:", reply_markup=kb)
@@ -445,7 +467,6 @@ async def end_chat_session(update_or_query, context, admin_id, user_id, ticket_i
     try: await context.bot.send_message(user_id, "🔒 Чат с оператором завершён.")
     except: pass
 
-# ---------- Управление ботом ----------
 is_running = False
 application = None
 polling_task = None
@@ -475,6 +496,7 @@ async def start_support():
     app.add_handler(CallbackQueryHandler(remove_admin_callback, pattern="^remove_admin$"))
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_cmd))
+    app.add_handler(CommandHandler("user", cmd_users))
     await app.initialize()
     await app.start()
     polling_task = asyncio.create_task(app.updater.start_polling())
