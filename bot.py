@@ -1,4 +1,4 @@
-import os, asyncio, json, time, base64, uuid, random, io, urllib.parse, hashlib, tempfile, signal, csv, requests, sqlite3, logging
+import os, asyncio, json, time, base64, uuid, random, io, urllib.parse, hashlib, tempfile, signal, csv, requests, sqlite3, logging, sys
 from pathlib import Path
 from datetime import datetime, timedelta
 from telethon import TelegramClient, events, Button
@@ -13,9 +13,19 @@ import speech_recognition as sr
 from pydub import AudioSegment
 from duckduckgo_search import DDGS
 from bs4 import BeautifulSoup
-import tdxt_bot
-import support_bot
-import group_ai_bot
+
+try:
+    import tdxt_bot
+except ImportError:
+    tdxt_bot = None
+try:
+    import support_bot
+except ImportError:
+    support_bot = None
+try:
+    import group_ai_bot
+except ImportError:
+    group_ai_bot = None
 
 AudioSegment.converter = "/opt/render/project/src/ffmpeg"
 
@@ -32,7 +42,12 @@ ACC2_DISPLAY_NAME = os.environ.get("ACC2_DISPLAY_NAME", "")
 OWNER_USERNAME = os.environ.get("OWNER_USERNAME", "Anopchenko2011")
 BACKUP_INTERVAL = int(os.environ.get("BACKUP_INTERVAL", "300"))
 BACKUP_KEY = os.environ.get("BACKUP_KEY", "")
-AI_MODEL = os.environ.get("AI_MODEL", "deepseek-chat")
+
+DEEPSEEK_KEYS = [key for key in (os.environ.get("DEEPSEEK_API_KEY", ""), os.environ.get("DEEPSEEK_API_KEY2", "")) if key]
+if not DEEPSEEK_KEYS:
+    DEEPSEEK_KEYS = [""]
+
+AI_MODEL = "deepseek-chat"
 AI_MAX_TOKENS = 200
 AI_TEMPERATURE = 0.7
 AI_SYSTEM_PROMPT = "Ты — дружелюбный собеседник. Отвечай кратко, разговорным стилем, без примеров и лишних объяснений. Если что-то непонятно — уточни, но не пиши эссе."
@@ -54,14 +69,6 @@ SCHEDULE_FILE = Path("schedule.json")
 LAST_MSG_FILE = Path("last_backup_msg.json")
 AI_TOKEN_FILE = Path("ai_token.json")
 TEMPLATES_DIR = Path("templates")
-
-DEEPSEEK_KEYS = []
-for var in ("DEEPSEEK_API_KEY", "DEEPSEEK_API_KEY2"):
-    key = os.environ.get(var, "")
-    if key:
-        DEEPSEEK_KEYS.append(key)
-if not DEEPSEEK_KEYS:
-    DEEPSEEK_KEYS = [""]
 
 if BACKUP_KEY:
     ENCRYPTION_KEY = base64.urlsafe_b64encode(hashlib.sha256(BACKUP_KEY.encode()).digest())
@@ -215,16 +222,16 @@ async def call_deepseek(messages, max_tokens=AI_MAX_TOKENS, temperature=AI_TEMPE
             continue
     return f"❌ All keys failed. Last: {last_error}"
 
-def github_ai(query, model=AI_MODEL, max_tokens=AI_MAX_TOKENS):
+def github_ai(query):
     messages = [{"role":"system","content":AI_SYSTEM_PROMPT},{"role":"user","content":query}]
-    return asyncio.get_event_loop().run_until_complete(call_deepseek(messages, max_tokens, AI_TEMPERATURE))
+    return asyncio.get_event_loop().run_until_complete(call_deepseek(messages))
 
 def github_ai_chat(chat_id, user_message):
     if chat_id not in ai_conversations: ai_conversations[chat_id] = [{"role":"system","content":AI_SYSTEM_PROMPT}]
     history = ai_conversations[chat_id]
     history.append({"role":"user","content":user_message})
     if len(history) > 11: history = [history[0]] + history[-10:]; ai_conversations[chat_id] = history
-    return asyncio.get_event_loop().run_until_complete(call_deepseek(history, AI_MAX_TOKENS, AI_TEMPERATURE))
+    return asyncio.get_event_loop().run_until_complete(call_deepseek(history))
 
 async def cleanup_old_backups():
     global last_backup_msg_id
@@ -1213,41 +1220,56 @@ async def api_set_ai_token(request):
         add_log("AI", "Пользователь обновил AI-токен")
     return web.Response(text="OK")
 
-# TDXT API
 async def api_tdxt_start(request):
-    await tdxt_bot.start_tdxt()
-    return web.json_response({"status": "started"})
+    if tdxt_bot:
+        await tdxt_bot.start_tdxt()
+        return web.json_response({"status": "started"})
+    return web.json_response({"status": "tdxt_bot not available"})
 
 async def api_tdxt_stop(request):
-    await tdxt_bot.stop_tdxt()
-    return web.json_response({"status": "stopped"})
+    if tdxt_bot:
+        await tdxt_bot.stop_tdxt()
+        return web.json_response({"status": "stopped"})
+    return web.json_response({"status": "tdxt_bot not available"})
 
 async def api_tdxt_status(request):
-    return web.json_response({"running": tdxt_bot.is_running})
+    if tdxt_bot:
+        return web.json_response({"running": tdxt_bot.is_running})
+    return web.json_response({"running": False})
 
-# Support API
 async def api_support_start(request):
-    await support_bot.start_support()
-    return web.json_response({"status": "started"})
+    if support_bot:
+        await support_bot.start_support()
+        return web.json_response({"status": "started"})
+    return web.json_response({"status": "support_bot not available"})
 
 async def api_support_stop(request):
-    await support_bot.stop_support()
-    return web.json_response({"status": "stopped"})
+    if support_bot:
+        await support_bot.stop_support()
+        return web.json_response({"status": "stopped"})
+    return web.json_response({"status": "support_bot not available"})
 
 async def api_support_status(request):
-    return web.json_response({"running": support_bot.is_running})
+    if support_bot:
+        return web.json_response({"running": support_bot.is_running})
+    return web.json_response({"running": False})
 
-# Group AI API
 async def api_groupai_start(request):
-    await group_ai_bot.start_group_ai()
-    return web.json_response({"status": "started"})
+    if group_ai_bot:
+        await group_ai_bot.start_group_ai()
+        return web.json_response({"status": "started"})
+    return web.json_response({"status": "group_ai_bot not available"})
 
 async def api_groupai_stop(request):
-    await group_ai_bot.stop_group_ai()
-    return web.json_response({"status": "stopped"})
+    if group_ai_bot:
+        await group_ai_bot.stop_group_ai()
+        return web.json_response({"status": "stopped"})
+    return web.json_response({"status": "group_ai_bot not available"})
 
 async def api_groupai_status(request):
-    return web.json_response({"running": group_ai_bot.is_running})
+    if group_ai_bot:
+        return web.json_response({"running": group_ai_bot.is_running})
+    return web.json_response({"running": False})
 
 app = web.Application()
 app.router.add_get("/", lambda r: web.Response(text="OK"))
@@ -1305,29 +1327,39 @@ app.router.add_get("/api/groupai/status", api_groupai_status)
 async def start_web_server():
     runner = web.AppRunner(app); await runner.setup()
     site = web.TCPSite(runner, "0.0.0.0", PORT); await site.start()
-    add_log("INFO", f"🔐 Панель управления запущена на порту {PORT}")
+    print(f"🌐 Веб-сервер запущен на порту {PORT}", flush=True)
     while True: await asyncio.sleep(3600)
 
 def shutdown_handler(signum, frame):
-    add_log("INFO", "🔻 Завершение работы, сохраняю состояние локально...")
+    print("🔻 Завершение работы", flush=True)
     data = {"muted_chats": list(muted_chats), "protected_users": list(protected_users), "admins": admins, "extra_clients": {k: {"session": v["session"]} for k, v in extra_clients.items()}, "auto_reply_global": auto_reply_global, "auto_reply_chats": auto_reply_chats}
     save_json(BACKUP_LOCAL, data); os._exit(0)
 
 async def main():
     global http_session, client2, bot
+    print("🚀 main() старт", flush=True)
     http_session = ClientSession()
-    await client1.start(); add_log("INFO", "✅ Аккаунт 1 запущен")
+    try:
+        await client1.start()
+        print("✅ Аккаунт 1 запущен", flush=True)
+    except Exception as e:
+        print(f"❌ Ошибка запуска аккаунта 1: {e}", flush=True)
+        sys.exit(1)
+
     if client2:
-        try: await client2.start(); add_log("INFO", "✅ Аккаунт 2 запущен")
-        except Exception as e: add_log("ERROR", f"Не удалось запустить второй аккаунт: {e}"); client2 = None
+        try:
+            await client2.start()
+            print("✅ Аккаунт 2 запущен", flush=True)
+        except Exception as e:
+            print(f"⚠️ Ошибка запуска второго аккаунта: {e}", flush=True)
+            client2 = None
 
     bot = None
     if BOT_TOKEN:
         bot = TelegramClient(StringSession(), API_ID, API_HASH)
         try:
             await bot.start(bot_token=BOT_TOKEN)
-            add_log("INFO", "🤖 Бот авторизации запущен")
-
+            print("✅ Бот авторизации запущен", flush=True)
             @bot.on(events.CallbackQuery)
             async def auth_callback(event):
                 data = event.data.decode()
@@ -1336,69 +1368,48 @@ async def main():
                     if token in auth_tokens:
                         auth_tokens[token] = True
                         await event.edit("✅ Вход одобрен.", buttons=None)
-                        add_log("AUTH", "Вход одобрен через бота")
                     elif token in pending_registrations:
                         info = pending_registrations.pop(token)
                         password = uuid.uuid4().hex[:8]
                         admins[info["name"]] = {"password": hash_password(password), "role": info["role"]}
                         save_admins()
                         await event.edit(f"✅ Пользователь {info['name']} добавлен как {info['role']}. Пароль: {password}", buttons=None)
-                        add_log("AUTH", f"Новый пользователь {info['name']} зарегистрирован")
                 elif data.startswith("reject:"):
                     token = data.split(":")[1]
                     auth_tokens.pop(token, None)
                     if token in pending_registrations:
                         pending_registrations.pop(token)
                     await event.edit("🚫 Вход отклонён.", buttons=None)
-                    add_log("AUTH", "Вход отклонён")
 
             @bot.on(events.NewMessage(pattern=r'^/mute\s+(\S+)'))
             async def bot_mute(event):
-                chat_id = int(event.pattern_match.group(1))
-                muted_chats.add(chat_id)
-                save_state()
+                chat_id = int(event.pattern_match.group(1)); muted_chats.add(chat_id); save_state()
                 await event.reply("Чат заглушен.")
-                add_log("CMD", f"Бот: мут чата {chat_id}")
-                await broadcast_state()
-                await backup_state()
 
             @bot.on(events.NewMessage(pattern=r'^/unmute\s+(\S+)'))
             async def bot_unmute(event):
-                chat_id = int(event.pattern_match.group(1))
-                muted_chats.discard(chat_id)
-                save_state()
+                chat_id = int(event.pattern_match.group(1)); muted_chats.discard(chat_id); save_state()
                 await event.reply("Чат размучен.")
-                add_log("CMD", f"Бот: размут чата {chat_id}")
-                await broadcast_state()
-                await backup_state()
 
             @bot.on(events.NewMessage(pattern=r'^/unmuteall'))
             async def bot_unmuteall(event):
-                muted_chats.clear()
-                save_state()
+                muted_chats.clear(); save_state()
                 await event.reply("Все чаты размучены.")
-                add_log("CMD", "Бот: сняты все муты")
-                await broadcast_state()
-                await backup_state()
 
             @bot.on(events.NewMessage(pattern=r'^/autoreply\s+(on|off)'))
             async def bot_autoreply(event):
                 state = event.pattern_match.group(1)
                 auto_reply_global['enabled'] = (state == 'on')
                 await event.reply(f"Автоответчик {'включён' if state == 'on' else 'выключен'}.")
-                add_log("CMD", f"Бот: автоответчик {state}")
-                await broadcast_state()
-                await backup_state()
 
             @bot.on(events.NewMessage(pattern=r'^/status'))
             async def bot_status(event):
                 await event.reply(f"Активных мутов: {len(muted_chats)}\nAFK: {len(afk_users)}\nАвтоответчик: {'включён' if auto_reply_global['enabled'] else 'выключен'}\nAI-автоответчик (ЛС): {'включён' if ai_auto_reply_enabled else 'выключен'}")
-
         except Exception as e:
-            add_log("ERROR", f"Не удалось запустить бота авторизации: {e}")
+            print(f"⚠️ Ошибка запуска бота авторизации: {e}", flush=True)
             bot = None
     else:
-        add_log("WARN", "BOT_TOKEN не задан — бот авторизации не запущен")
+        print("ℹ️ BOT_TOKEN не задан", flush=True)
 
     await cleanup_old_backups()
     await init_protected_users()
@@ -1406,17 +1417,26 @@ async def main():
     asyncio.create_task(backup_loop())
     asyncio.create_task(schedule_runner())
 
-    if os.environ.get("TDXT_BOT_TOKEN"):
-        await tdxt_bot.start_tdxt()
-        add_log("TDXT", "TDXT бот автоматически запущен")
+    if tdxt_bot and os.environ.get("TDXT_BOT_TOKEN"):
+        try:
+            await tdxt_bot.start_tdxt()
+            print("✅ TDXT бот запущен", flush=True)
+        except Exception as e:
+            print(f"⚠️ TDXT бот не запущен: {e}", flush=True)
 
-    if os.environ.get("SUPPORT_BOT_TOKEN"):
-        await support_bot.start_support()
-        add_log("SUPPORT", "Support бот автоматически запущен")
+    if support_bot and os.environ.get("SUPPORT_BOT_TOKEN"):
+        try:
+            await support_bot.start_support()
+            print("✅ Support бот запущен", flush=True)
+        except Exception as e:
+            print(f"⚠️ Support бот не запущен: {e}", flush=True)
 
-    if os.environ.get("GROUP_AI_BOT_TOKEN"):
-        await group_ai_bot.start_group_ai()
-        add_log("GROUP_AI", "Group AI бот автоматически запущен")
+    if group_ai_bot and os.environ.get("GROUP_AI_BOT_TOKEN"):
+        try:
+            await group_ai_bot.start_group_ai()
+            print("✅ Group AI бот запущен", flush=True)
+        except Exception as e:
+            print(f"⚠️ Group AI бот не запущен: {e}", flush=True)
 
     signal.signal(signal.SIGTERM, shutdown_handler)
     await start_web_server()
@@ -1427,7 +1447,6 @@ async def main():
     if bot and bot.is_connected():
         tasks.append(bot.run_until_disconnected())
     await asyncio.gather(*tasks)
-
     if http_session:
         await http_session.close()
 
