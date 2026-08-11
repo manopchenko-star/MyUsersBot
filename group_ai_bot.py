@@ -7,8 +7,6 @@ from duckduckgo_search import DDGS
 
 BOT_TOKEN = os.environ.get("GROUP_AI_BOT_TOKEN", "")
 DEEPSEEK_API_KEY2 = os.environ.get("DEEPSEEK_API_KEY2", "")
-if not DEEPSEEK_API_KEY2:
-    raise RuntimeError("DEEPSEEK_API_KEY2 не задан!")
 FOUNDER_USERNAME = "Anopchenko2011"
 AI_MODEL = "deepseek-chat"
 AI_MAX_TOKENS = 200
@@ -171,7 +169,7 @@ def is_founder(username):
 
 async def ask_ai(prompt, chat_id=None, context=[]):
     if not DEEPSEEK_API_KEY2:
-        return "❌ DEEPSEEK_API_KEY2 не задан."
+        return "❌ API ключ DEEPSEEK_API_KEY2 не задан."
     sys = custom_system_prompt
     if not use_emojis:
         sys += " Не используй смайлики и эмодзи."
@@ -351,6 +349,7 @@ async def founder_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.pop('action', None)
     await update.message.reply_text("🔧 Панель управления ботом", reply_markup=founder_main_menu())
 
+# ---------- Групповые команды ----------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.type == "private":
         if is_founder(update.effective_user.username):
@@ -414,6 +413,7 @@ async def tts_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await update.message.reply_text("Не удалось создать голосовое сообщение.")
 
+# ---------- Команды управления ботом ----------
 async def enable_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     if not is_admin(update.effective_user.id, chat_id):
@@ -514,6 +514,7 @@ async def mod_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         remove_group_admin(chat_id, target_id)
         await update.message.reply_text(f"❌ Пользователь {target_id} удалён из модераторов.")
 
+# ---------- Обработка сообщений в группах ----------
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.type not in ("group", "supergroup"):
         return
@@ -565,6 +566,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context_data[chat_id].append({"role":"assistant","content":answer})
     await update.message.reply_text(answer)
 
+# ---------- Случайные отправки ----------
 async def random_sender(app: Application):
     while True:
         await asyncio.sleep(60)
@@ -603,6 +605,7 @@ async def random_sender(app: Application):
         except Exception as e:
             logging.error(f"Random sender error: {e}")
 
+# ---------- Управление ботом ----------
 is_running = False
 application = None
 polling_task = None
@@ -640,7 +643,9 @@ async def start_group_ai():
     app.add_handler(CallbackQueryHandler(founder_callback, pattern="^founder_"))
     app.add_handler(CallbackQueryHandler(settings_callback, pattern="^(toggle_tts|toggle_video|change_interval|close_settings|toggle_nsfw)$"))
     app.add_handler(MessageHandler(filters.TEXT & (filters.ChatType.GROUPS | filters.ChatType.SUPERGROUP), handle_message))
+
     asyncio.create_task(random_sender(app))
+
     await app.initialize()
     await app.start()
     polling_task = asyncio.create_task(app.updater.start_polling())
