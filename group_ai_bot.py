@@ -9,7 +9,7 @@ BOT_TOKEN = os.environ.get("GROUP_AI_BOT_TOKEN", "")
 DEEPSEEK_API_KEY2 = os.environ.get("DEEPSEEK_API_KEY2", "")
 FOUNDER_USERNAME = "Anopchenko2011"
 FOUNDER_ID = 1523825366
-AI_MODEL = "free-gpt-5.6-terra"
+AI_MODEL = "free-gpt-5.4-mini"
 AI_MAX_TOKENS = 200
 AI_TEMPERATURE = 0.95
 BASE_SYSTEM_PROMPT = (
@@ -186,7 +186,7 @@ async def ask_ai(prompt, chat_id=None, context=[]):
     payload = {"model": AI_MODEL, "messages": messages, "max_tokens": AI_MAX_TOKENS, "temperature": AI_TEMPERATURE}
     try:
         async with aiohttp.ClientSession() as session:
-            async with session.post("https://odirouter.ai/api/v1/chat/completions", json=payload, headers=headers, timeout=30) as resp:
+            async with session.post("https://api.odirouter.ai/v1/chat/completions", json=payload, headers=headers, timeout=30) as resp:
                 if resp.status == 200:
                     data = await resp.json()
                     return data["choices"][0]["message"]["content"]
@@ -350,7 +350,6 @@ async def founder_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.pop('action', None)
     await update.message.reply_text("🔧 Панель управления ботом", reply_markup=founder_main_menu())
 
-# ---------- Групповые команды ----------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.type == "private":
         if is_founder(update.effective_user):
@@ -619,7 +618,6 @@ async def start_group_ai():
         founder_id = FOUNDER_ID
     conn.close()
     app = Application.builder().token(BOT_TOKEN).build()
-    # Исправленный порядок: сначала команды, потом текстовые сообщения
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("meme", meme_cmd))
     app.add_handler(CommandHandler("joke", joke_cmd))
@@ -633,7 +631,6 @@ async def start_group_ai():
     app.add_handler(CommandHandler("nsfw", nsfw_cmd))
     app.add_handler(CommandHandler("mod", mod_cmd))
     app.add_handler(CommandHandler("help", start))
-    # Обработчик личных сообщений от основателя (только не команды)
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & filters.ChatType.PRIVATE & filters.User(user_id=FOUNDER_ID), founder_message))
     app.add_handler(CallbackQueryHandler(founder_callback, pattern="^founder_"))
     app.add_handler(CallbackQueryHandler(settings_callback, pattern="^(toggle_tts|toggle_video|change_interval|close_settings|toggle_nsfw)$"))
