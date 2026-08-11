@@ -6,7 +6,7 @@ from gtts import gTTS
 from duckduckgo_search import DDGS
 
 BOT_TOKEN = os.environ.get("GROUP_AI_BOT_TOKEN", "")
-DEEPSEEK_API_KEY2 = os.environ.get("DEEPSEEK_API_KEY2", "")
+ODIROUTER_API_KEY = os.environ.get("ODIROUTER_API_KEY", "")
 FOUNDER_USERNAME = "Anopchenko2011"
 FOUNDER_ID = 1523825366
 AI_MODEL = "free-gpt-5.4-mini"
@@ -169,7 +169,7 @@ def is_founder(user):
     return user.id == FOUNDER_ID or (user.username and user.username.lower() == FOUNDER_USERNAME.lower())
 
 async def ask_ai(prompt, chat_id=None, context=[]):
-    if not DEEPSEEK_API_KEY2:
+    if not ODIROUTER_API_KEY:
         return "❌ API ключ не задан."
     sys = custom_system_prompt
     if not use_emojis:
@@ -182,7 +182,7 @@ async def ask_ai(prompt, chat_id=None, context=[]):
     for entry in context[-6:]:
         messages.append(entry)
     messages.append({"role":"user","content":prompt})
-    headers = {"Authorization": f"Bearer {DEEPSEEK_API_KEY2}", "Content-Type": "application/json"}
+    headers = {"Authorization": f"Bearer {ODIROUTER_API_KEY}", "Content-Type": "application/json"}
     payload = {"model": AI_MODEL, "messages": messages, "max_tokens": AI_MAX_TOKENS, "temperature": AI_TEMPERATURE}
     try:
         async with aiohttp.ClientSession() as session:
