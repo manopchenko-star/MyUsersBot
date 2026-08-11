@@ -147,8 +147,11 @@ def remove_group_admin(chat_id, user_id):
     conn = get_db(); c = conn.cursor()
     c.execute("DELETE FROM group_admins WHERE chat_id=? AND user_id=?", (chat_id, user_id))
     conn.commit(); conn.close()
+def is_global_admin(user_id):
+    """Проверяет, является ли пользователь глобальным администратором (в таблице admins)"""
+    return user_id in group_admins or user_id == founder_id
 def is_admin(user_id, chat_id=None):
-    if user_id in group_admins or user_id == founder_id:
+    if is_global_admin(user_id):
         return True
     if chat_id and is_group_admin(chat_id, user_id):
         return True
@@ -217,19 +220,23 @@ def founder_main_menu():
         [InlineKeyboardButton("🔄 Обновить", callback_data="founder_refresh")]
     ]
     return InlineKeyboardMarkup(keyboard)
-async def founder_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE, user):
+    """Открывает панель управления для основателя или глобального админа"""
     global founder_id
-    user = update.effective_user
     if is_founder(user):
         founder_id = user.id
         save_admin_to_db(founder_id, user.username)
-        await update.message.reply_text("🔧 Панель управления ботом", reply_markup=founder_main_menu())
-    else:
-        await update.message.reply_text("Я работаю только в группах!")
+    if not is_global_admin(user.id):
+        await update.message.reply_text("⛔ У вас нет доступа к панели управления.")
+        return
+    await update.message.reply_text("🔧 Панель управления ботом", reply_markup=founder_main_menu())
+async def founder_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await admin_panel(update, context, update.effective_user)
 async def founder_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    if not is_founder(query.from_user):
+    user = query.from_user
+    if not is_global_admin(user.id):
         return await query.answer("⛔ Нет доступа.", show_alert=True)
     data = query.data
     if data == "founder_refresh":
@@ -274,6 +281,9 @@ async def founder_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data['action'] = 'change_prompt'
         await query.edit_message_text("Введите новый системный промпт (одним сообщением):")
     elif data == "founder_admins":
+        if not is_founder(user):
+            await query.answer("⛔ Только основатель может управлять глобальными админами.", show_alert=True)
+            return
         conn = get_db(); c = conn.cursor()
         c.execute("SELECT username FROM admins WHERE username IS NOT NULL")
         admins = [row[0] for row in c.fetchall()]
@@ -286,9 +296,15 @@ async def founder_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ]
         await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
     elif data == "founder_add_admin":
+        if not is_founder(user):
+            await query.answer("⛔ Только основатель.", show_alert=True)
+            return
         context.user_data['action'] = 'add_admin_founder'
         await query.edit_message_text("Введите @username глобального администратора (без @):")
     elif data == "founder_remove_admin":
+        if not is_founder(user):
+            await query.answer("⛔ Только основатель.", show_alert=True)
+            return
         context.user_data['action'] = 'remove_admin_founder'
         await query.edit_message_text("Введите @username глобального администратора для удаления (без @):")
     elif data == "founder_grant_group":
@@ -298,21 +314,29 @@ async def founder_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("Неизвестная команда.")
 async def founder_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
-    if not is_founder(user) or update.effective_chat.type != "private":
+    if not is_global_admin(user.id) or update.effective_chat.type != "private":
         return
     action = context.user_data.get('action')
     text = update.message.text.strip()
     if not action:
-        await update.message.reply_text("Используйте /start для панели управления.")
+        await update.message.reply_text("Используйте кнопки панели управления. Для открытия панели напишите /start.")
         return
     if action == 'change_prompt':
         set_global_setting("system_prompt", text)
         await update.message.reply_text("✅ Системный промпт обновлён.")
     elif action == 'add_admin_founder':
+        if not is_founder(user):
+            await update.message.reply_text("⛔ Только основатель может добавлять глобальных админов.")
+            context.user_data.pop('action', None)
+            return
         username = text.lstrip("@").lower()
         save_admin_to_db(-1, username)
         await update.message.reply_text(f"✅ @{username} добавлен в список ожидания. Он должен написать /start в ЛС боту.")
     elif action == 'remove_admin_founder':
+        if not is_founder(user):
+            await update.message.reply_text("⛔ Только основатель может удалять глобальных админов.")
+            context.user_data.pop('action', None)
+            return
         username = text.lstrip("@").lower()
         conn = get_db(); c = conn.cursor()
         c.execute("SELECT user_id FROM admins WHERE username=?", (username,))
@@ -340,10 +364,23 @@ async def founder_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("🔧 Панель управления ботом", reply_markup=founder_main_menu())
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.type == "private":
-        if is_founder(update.effective_user):
-            await founder_start(update, context)
+        user = update.effective_user
+        # Проверяем, является ли пользователь глобальным администратором или основателем
+        if is_global_admin(user.id):
+            await admin_panel(update, context, user)
             return
         else:
+            # Проверяем, есть ли запись в таблице admins с user_id=-1 (ожидающий активации)
+            username = user.username
+            if username:
+                conn = get_db(); c = conn.cursor()
+                c.execute("SELECT 1 FROM admins WHERE username=? AND user_id=-1", (username.lower(),))
+                if c.fetchone():
+                    update_admin_id(username.lower(), user.id)
+                    conn.close()
+                    await update.message.reply_text("✅ Ваши права администратора активированы! Теперь вы можете управлять ботом.", reply_markup=founder_main_menu())
+                    return
+                conn.close()
             await update.message.reply_text("Я работаю только в группах!")
             return
     await update.message.reply_text(
