@@ -237,24 +237,6 @@ async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE, user):
 async def founder_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await admin_panel(update, context, update.effective_user)
 
-# Новая команда /send
-async def send_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    if not is_global_admin(user.id):
-        await update.message.reply_text("⛔ Только администратор.")
-        return
-    if not context.args:
-        await update.message.reply_text("Использование: /send <chat_id>\nПосле этого перешлите мне сообщение (текст, голосовое, видео), и я отправлю его в указанную группу.")
-        return
-    try:
-        chat_id = int(context.args[0])
-        # Сохраняем целевой чат
-        context.user_data['send_target'] = chat_id
-        context.user_data['action'] = 'forward_message'
-        await update.message.reply_text(f"✅ Целевая группа: {chat_id}. Теперь перешлите мне любое сообщение.")
-    except ValueError:
-        await update.message.reply_text("❌ Неверный ID чата. Он должен быть числом, например: /send -1001234567890")
-
 async def founder_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -302,7 +284,6 @@ async def founder_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         keyboard = [
             [InlineKeyboardButton("📝 Текст", callback_data="send_text")],
             [InlineKeyboardButton("🎤 Голосовое (TTS)", callback_data="send_voice")],
-            [InlineKeyboardButton("📎 Переслать сообщение", callback_data="send_forward")],
             [InlineKeyboardButton("🔙 Назад", callback_data="founder_send_message")]
         ]
         await query.edit_message_text(f"Выберите тип сообщения для группы {chat_id}:", reply_markup=InlineKeyboardMarkup(keyboard))
@@ -316,11 +297,6 @@ async def founder_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not target: await query.answer("Сначала выберите группу.", show_alert=True); return
         context.user_data['action'] = 'send_voice'
         await query.edit_message_text("🎤 Введите текст для озвучки:")
-    elif data == "send_forward":
-        target = context.user_data.get('send_target')
-        if not target: await query.answer("Сначала выберите группу.", show_alert=True); return
-        context.user_data['action'] = 'forward_message'
-        await query.edit_message_text("📎 Перешлите мне любое сообщение (текст, голосовое, видео), и я отправлю его в выбранную группу.")
     elif data.startswith("founder_toggle_nsfw_"):
         chat_id = int(data.split("_")[-1])
         settings = get_group_settings(chat_id)
@@ -382,32 +358,6 @@ async def founder_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_global_admin(user.id) or update.effective_chat.type != "private": return
     action = context.user_data.get('action')
     text = update.message.text.strip()
-
-    # Обработка пересылаемого сообщения
-    if action == 'forward_message':
-        target = context.user_data.get('send_target')
-        if not target:
-            await update.message.reply_text("❌ Целевая группа не выбрана. Используйте /send <chat_id>.")
-            context.user_data.pop('action', None)
-            return
-        if update.message.forward_from_chat:
-            # Пересылаем оригинальное сообщение
-            try:
-                await application.bot.forward_message(chat_id=target, from_chat_id=update.message.forward_from_chat.id, message_id=update.message.forward_from_message_id)
-                await update.message.reply_text("✅ Сообщение переслано.")
-            except Exception as e:
-                await update.message.reply_text(f"Ошибка пересылки: {e}")
-        else:
-            # Если это не пересланное сообщение, попробуем скопировать
-            try:
-                await update.message.copy(chat_id=target)
-                await update.message.reply_text("✅ Сообщение отправлено.")
-            except Exception as e:
-                await update.message.reply_text(f"Ошибка: {e}")
-        context.user_data.pop('send_target', None)
-        context.user_data.pop('action', None)
-        return
-
     if not action:
         await update.message.reply_text("Используйте кнопки панели управления. Для открытия панели напишите /start.")
         return
@@ -709,8 +659,11 @@ async def start_group_ai():
     else: founder_id = FOUNDER_ID
     conn.close()
     app = Application.builder().token(BOT_TOKEN).build()
+    # Callback-обработчики (первыми, чтобы кнопки работали)
+    app.add_handler(CallbackQueryHandler(founder_callback, pattern="^founder_"))
+    app.add_handler(CallbackQueryHandler(settings_callback, pattern="^(toggle_tts|toggle_video|change_interval|close_settings|toggle_nsfw|toggle_night)$"))
+    # Команды
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("send", send_command))  # Новая команда
     app.add_handler(CommandHandler("meme", meme_cmd))
     app.add_handler(CommandHandler("joke", joke_cmd))
     app.add_handler(CommandHandler("sound", sound_cmd))
@@ -723,9 +676,9 @@ async def start_group_ai():
     app.add_handler(CommandHandler("nsfw", nsfw_cmd))
     app.add_handler(CommandHandler("mod", mod_cmd))
     app.add_handler(CommandHandler("help", start))
+    # Личные сообщения (не команды)
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & filters.ChatType.PRIVATE & filters.User(user_id=FOUNDER_ID), founder_message))
-    app.add_handler(CallbackQueryHandler(founder_callback, pattern="^founder_"))
-    app.add_handler(CallbackQueryHandler(settings_callback, pattern="^(toggle_tts|toggle_video|change_interval|close_settings|toggle_nsfw|toggle_night)$"))
+    # Групповые сообщения
     app.add_handler(MessageHandler(filters.TEXT & (filters.ChatType.GROUPS | filters.ChatType.SUPERGROUP), handle_message))
     asyncio.create_task(random_sender(app))
     await app.initialize()
