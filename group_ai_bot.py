@@ -8,8 +8,8 @@ from duckduckgo_search import DDGS
 BOT_TOKEN = os.environ.get("GROUP_AI_BOT_TOKEN", "")
 DEEPSEEK_API_KEY2 = os.environ.get("DEEPSEEK_API_KEY2", "")
 FOUNDER_USERNAME = "Anopchenko2011"
-FOUNDER_ID = 1523825366  # ваш Telegram ID
-AI_MODEL = "free-gpt-5.6-terra"
+FOUNDER_ID = 1523825366
+AI_MODEL = "free-gpt-5.4-mini"
 AI_MAX_TOKENS = 200
 AI_TEMPERATURE = 0.95
 BASE_SYSTEM_PROMPT = (
@@ -24,7 +24,7 @@ DATABASE = "group_ai_bot.db"
 context_data = {}
 last_random_time = {}
 group_admins = set()
-founder_id = None  # будет установлен при старте
+founder_id = None
 global_enabled = True
 use_emojis = True
 custom_system_prompt = BASE_SYSTEM_PROMPT
@@ -165,16 +165,8 @@ def is_admin(user_id, chat_id=None):
         return True
     return False
 
-def is_founder_by_username(username):
-    return username and username.lower() == FOUNDER_USERNAME.lower()
-
 def is_founder(user):
-    """Проверяет, является ли пользователь основателем (по ID или username)"""
-    if user.id == FOUNDER_ID:
-        return True
-    if user.username and user.username.lower() == FOUNDER_USERNAME.lower():
-        return True
-    return False
+    return user.id == FOUNDER_ID or (user.username and user.username.lower() == FOUNDER_USERNAME.lower())
 
 async def ask_ai(prompt, chat_id=None, context=[]):
     if not DEEPSEEK_API_KEY2:
@@ -522,14 +514,12 @@ async def mod_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         remove_group_admin(chat_id, target_id)
         await update.message.reply_text(f"❌ Пользователь {target_id} удалён из модераторов.")
 
-# ---------- Обработка сообщений в группах ----------
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.type not in ("group", "supergroup"):
         return
     chat_id = update.effective_chat.id
     user = update.effective_user
     bot_username = context.bot.username
-
     if not global_enabled:
         return
     settings = get_group_settings(chat_id)
@@ -548,7 +538,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("Введите число.")
         context.user_data['waiting_interval'] = False
         return
-
     mentioned = False
     if update.message.text and f"@{bot_username}" in update.message.text:
         mentioned = True
@@ -556,25 +545,21 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         mentioned = True
     if not mentioned:
         return
-
     clean_text = update.message.text.replace(f"@{bot_username}", "").strip() if update.message.text else ""
     if not clean_text:
         clean_text = "Привет! Расскажи что-нибудь смешное."
-
     if chat_id not in context_data:
         context_data[chat_id] = []
     user_name = f"@{user.username}" if user.username else user.first_name
     context_data[chat_id].append({"role":"user","content":f"{user_name}: {clean_text}"})
     if len(context_data[chat_id]) > 6:
         context_data[chat_id] = context_data[chat_id][-6:]
-
     answer = await ask_ai(clean_text, chat_id=chat_id, context=context_data[chat_id])
     if user.id == founder_id:
         answer = f"Создатель, {answer}"
     context_data[chat_id].append({"role":"assistant","content":answer})
     await update.message.reply_text(answer)
 
-# ---------- Случайные отправки ----------
 async def random_sender(app: Application):
     while True:
         await asyncio.sleep(60)
@@ -613,7 +598,6 @@ async def random_sender(app: Application):
         except Exception as e:
             logging.error(f"Random sender error: {e}")
 
-# ---------- Управление ботом ----------
 is_running = False
 application = None
 polling_task = None
@@ -626,19 +610,16 @@ async def start_group_ai():
     init_db()
     load_global_settings()
     group_admins = load_admins()
-    # Устанавливаем founder_id, если он уже сохранён в БД
     conn = get_db(); c = conn.cursor()
     c.execute("SELECT user_id FROM admins WHERE user_id=?", (FOUNDER_ID,))
     row = c.fetchone()
     if row:
         founder_id = row[0]
     else:
-        # Если основатель ещё не заходил, founder_id = FOUNDER_ID (он будет установлен при первом /start)
         founder_id = FOUNDER_ID
     conn.close()
-
     app = Application.builder().token(BOT_TOKEN).build()
-    app.add_handler(MessageHandler(filters.TEXT & filters.ChatType.PRIVATE & filters.User(user_id=FOUNDER_ID), founder_message))
+    # Исправленный порядок: сначала команды, потом текстовые сообщения
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("meme", meme_cmd))
     app.add_handler(CommandHandler("joke", joke_cmd))
@@ -652,6 +633,8 @@ async def start_group_ai():
     app.add_handler(CommandHandler("nsfw", nsfw_cmd))
     app.add_handler(CommandHandler("mod", mod_cmd))
     app.add_handler(CommandHandler("help", start))
+    # Обработчик личных сообщений от основателя (только не команды)
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & filters.ChatType.PRIVATE & filters.User(user_id=FOUNDER_ID), founder_message))
     app.add_handler(CallbackQueryHandler(founder_callback, pattern="^founder_"))
     app.add_handler(CallbackQueryHandler(settings_callback, pattern="^(toggle_tts|toggle_video|change_interval|close_settings|toggle_nsfw)$"))
     app.add_handler(MessageHandler(filters.TEXT & (filters.ChatType.GROUPS | filters.ChatType.SUPERGROUP), handle_message))
