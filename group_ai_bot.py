@@ -4,9 +4,11 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKe
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, ContextTypes, filters
 from gtts import gTTS
 from duckduckgo_search import DDGS
+
 BOT_TOKEN = os.environ.get("GROUP_AI_BOT_TOKEN", "")
 DEEPSEEK_API_KEY2 = os.environ.get("DEEPSEEK_API_KEY2", "")
 FOUNDER_USERNAME = "Anopchenko2011"
+FOUNDER_ID = 1523825366  # ваш Telegram ID
 AI_MODEL = "free-gpt-5.6-terra"
 AI_MAX_TOKENS = 200
 AI_TEMPERATURE = 0.95
@@ -18,13 +20,15 @@ BASE_SYSTEM_PROMPT = (
     "Не используй команды в ответах, просто отвечай текстом."
 )
 DATABASE = "group_ai_bot.db"
+
 context_data = {}
 last_random_time = {}
 group_admins = set()
-founder_id = None
+founder_id = None  # будет установлен при старте
 global_enabled = True
 use_emojis = True
 custom_system_prompt = BASE_SYSTEM_PROMPT
+
 SOUND_MEMES = {
     "планктон": "https://www.myinstants.com/media/sounds/plankton-aaa.mp3",
     "это мой сын": "https://www.myinstants.com/media/sounds/eto-moi-syn.mp3",
@@ -41,7 +45,9 @@ SOUND_MEMES = {
     "ой всё": "https://www.myinstants.com/media/sounds/oi-vse.mp3",
     "сюрприз": "https://www.myinstants.com/media/sounds/surprise-mf.mp3",
 }
+
 def get_db(): return sqlite3.connect(DATABASE, check_same_thread=False)
+
 def init_db():
     conn = get_db(); c = conn.cursor()
     c.execute('''CREATE TABLE IF NOT EXISTS admins (user_id INTEGER PRIMARY KEY, username TEXT)''')
@@ -66,6 +72,7 @@ def init_db():
     c.execute("INSERT OR IGNORE INTO global_settings (key, value) VALUES ('use_emojis', '1')")
     c.execute("INSERT OR IGNORE INTO global_settings (key, value) VALUES ('system_prompt', ?)", (BASE_SYSTEM_PROMPT,))
     conn.commit(); conn.close()
+
 def load_global_settings():
     global global_enabled, use_emojis, custom_system_prompt
     conn = get_db(); c = conn.cursor()
@@ -75,15 +82,18 @@ def load_global_settings():
     global_enabled = rows.get('global_enabled', '1') == '1'
     use_emojis = rows.get('use_emojis', '1') == '1'
     custom_system_prompt = rows.get('system_prompt', BASE_SYSTEM_PROMPT)
+
 def set_global_setting(key, value):
     conn = get_db(); c = conn.cursor()
     c.execute("INSERT OR REPLACE INTO global_settings (key, value) VALUES (?, ?)", (key, str(value)))
     conn.commit(); conn.close()
     load_global_settings()
+
 def load_admins():
     conn = get_db(); c = conn.cursor()
     c.execute("SELECT user_id FROM admins WHERE user_id != -1")
     return {row[0] for row in c.fetchall()}
+
 def save_admin_to_db(user_id, username=None):
     conn = get_db(); c = conn.cursor()
     if username:
@@ -91,6 +101,7 @@ def save_admin_to_db(user_id, username=None):
     else:
         c.execute("INSERT OR IGNORE INTO admins (user_id) VALUES (?)", (user_id,))
     conn.commit(); conn.close()
+
 def update_admin_id(username, new_id):
     conn = get_db(); c = conn.cursor()
     c.execute("DELETE FROM admins WHERE username=? AND user_id=-1", (username,))
@@ -98,12 +109,14 @@ def update_admin_id(username, new_id):
     conn.commit(); conn.close()
     global group_admins
     group_admins = load_admins()
+
 def remove_admin_from_db(user_id):
     conn = get_db(); c = conn.cursor()
     c.execute("DELETE FROM admins WHERE user_id=?", (user_id,))
     conn.commit(); conn.close()
     global group_admins
     group_admins.discard(user_id)
+
 def get_group_settings(chat_id):
     conn = get_db(); c = conn.cursor()
     c.execute("SELECT enabled, random_tts, random_video, interval_minutes, nsfw FROM group_settings WHERE chat_id=?", (chat_id,))
@@ -112,6 +125,7 @@ def get_group_settings(chat_id):
         return {"enabled":bool(row[0]), "random_tts":bool(row[1]), "random_video":bool(row[2]), "interval":row[3], "nsfw":bool(row[4])}
     set_group_setting(chat_id, "enabled", 1)
     return {"enabled":True, "random_tts":False, "random_video":False, "interval":60, "nsfw":False}
+
 def set_group_setting(chat_id, key, value):
     conn = get_db(); c = conn.cursor()
     c.execute("INSERT OR IGNORE INTO group_settings (chat_id) VALUES (?)", (chat_id,))
@@ -126,28 +140,42 @@ def set_group_setting(chat_id, key, value):
     elif key == "nsfw":
         c.execute("UPDATE group_settings SET nsfw=? WHERE chat_id=?", (int(value), chat_id))
     conn.commit(); conn.close()
+
 def is_group_admin(chat_id, user_id):
     conn = get_db(); c = conn.cursor()
     c.execute("SELECT 1 FROM group_admins WHERE chat_id=? AND user_id=?", (chat_id, user_id))
     result = c.fetchone() is not None
     conn.close()
     return result
+
 def add_group_admin(chat_id, user_id):
     conn = get_db(); c = conn.cursor()
     c.execute("INSERT OR IGNORE INTO group_admins (chat_id, user_id) VALUES (?,?)", (chat_id, user_id))
     conn.commit(); conn.close()
+
 def remove_group_admin(chat_id, user_id):
     conn = get_db(); c = conn.cursor()
     c.execute("DELETE FROM group_admins WHERE chat_id=? AND user_id=?", (chat_id, user_id))
     conn.commit(); conn.close()
+
 def is_admin(user_id, chat_id=None):
     if user_id in group_admins or user_id == founder_id:
         return True
     if chat_id and is_group_admin(chat_id, user_id):
         return True
     return False
-def is_founder(username):
+
+def is_founder_by_username(username):
     return username and username.lower() == FOUNDER_USERNAME.lower()
+
+def is_founder(user):
+    """Проверяет, является ли пользователь основателем (по ID или username)"""
+    if user.id == FOUNDER_ID:
+        return True
+    if user.username and user.username.lower() == FOUNDER_USERNAME.lower():
+        return True
+    return False
+
 async def ask_ai(prompt, chat_id=None, context=[]):
     if not DEEPSEEK_API_KEY2:
         return "❌ API ключ не задан."
@@ -174,6 +202,7 @@ async def ask_ai(prompt, chat_id=None, context=[]):
                     return f"⚠️ Ошибка AI: {resp.status}"
     except Exception as e:
         return f"⚠️ Сетевая ошибка: {e}"
+
 async def generate_tts(text):
     try:
         tts = gTTS(text, lang='ru')
@@ -183,6 +212,7 @@ async def generate_tts(text):
         return buf
     except:
         return None
+
 async def search_video(query):
     try:
         with DDGS() as ddgs:
@@ -191,6 +221,7 @@ async def search_video(query):
                 return results[0]['content']
     except:
         return None
+
 def founder_main_menu():
     keyboard = [
         [InlineKeyboardButton("📊 Группы", callback_data="founder_groups")],
@@ -202,19 +233,21 @@ def founder_main_menu():
         [InlineKeyboardButton("🔄 Обновить", callback_data="founder_refresh")]
     ]
     return InlineKeyboardMarkup(keyboard)
+
 async def founder_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global founder_id
     user = update.effective_user
-    if is_founder(user.username):
+    if is_founder(user):
         founder_id = user.id
         save_admin_to_db(founder_id, user.username)
         await update.message.reply_text("🔧 Панель управления ботом", reply_markup=founder_main_menu())
     else:
         await update.message.reply_text("Я работаю только в группах!")
+
 async def founder_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    if not is_founder(query.from_user.username):
+    if not is_founder(query.from_user):
         return await query.answer("⛔ Нет доступа.", show_alert=True)
     data = query.data
     if data == "founder_refresh":
@@ -281,9 +314,10 @@ async def founder_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("Введите через пробел: <ID группы> <user_id>\nПример: -1001234567890 123456789")
     else:
         await query.edit_message_text("Неизвестная команда.")
+
 async def founder_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
-    if not is_founder(user.username) or update.effective_chat.type != "private":
+    if not is_founder(user) or update.effective_chat.type != "private":
         return
     action = context.user_data.get('action')
     text = update.message.text.strip()
@@ -323,9 +357,11 @@ async def founder_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"✅ Пользователь {user_id} теперь модератор группы {chat_id}.")
     context.user_data.pop('action', None)
     await update.message.reply_text("🔧 Панель управления ботом", reply_markup=founder_main_menu())
+
+# ---------- Групповые команды ----------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.type == "private":
-        if is_founder(update.effective_user.username):
+        if is_founder(update.effective_user):
             await founder_start(update, context)
             return
         else:
@@ -342,14 +378,17 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/sounds – список всех звуков\n\n"
         "Управление (модераторы): /settings, /nsfw, /mod"
     )
+
 async def meme_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     prompt = "Придумай короткий смешной мем (1-2 предложения)."
     answer = await ask_ai(prompt, chat_id=update.effective_chat.id)
     await update.message.reply_text(answer)
+
 async def joke_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     prompt = "Расскажи короткий анекдот или шутку."
     answer = await ask_ai(prompt, chat_id=update.effective_chat.id)
     await update.message.reply_text(answer)
+
 async def sound_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
         await update.message.reply_text("Укажите название звука. Список: /sounds")
@@ -360,8 +399,10 @@ async def sound_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_audio(audio=url, title=name)
     else:
         await update.message.reply_text("Такой звук не найден. Доступные: " + ", ".join(SOUND_MEMES.keys()))
+
 async def list_sounds_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Доступные звуки:\n" + "\n".join(f"• {k}" for k in SOUND_MEMES.keys()))
+
 async def video_meme_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = random.choice(["смешные животные", "приколы", "угарные моменты", "ржака до слез"])
     url = await search_video(query)
@@ -369,6 +410,7 @@ async def video_meme_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"Видео-мем: {url}")
     else:
         await update.message.reply_text("Не удалось найти видео.")
+
 async def tts_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = " ".join(context.args) if context.args else None
     if not text:
@@ -379,18 +421,21 @@ async def tts_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_voice(voice)
     else:
         await update.message.reply_text("Не удалось создать голосовое сообщение.")
+
 async def enable_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     if not is_admin(update.effective_user.id, chat_id):
         await update.message.reply_text("⛔ Только модератор."); return
     set_group_setting(chat_id, "enabled", 1)
     await update.message.reply_text("✅ Бот включён в этом чате.")
+
 async def disable_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     if not is_admin(update.effective_user.id, chat_id):
         await update.message.reply_text("⛔ Только модератор."); return
     set_group_setting(chat_id, "enabled", 0)
     await update.message.reply_text("❌ Бот выключен.")
+
 async def settings_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     if not is_admin(update.effective_user.id, chat_id):
@@ -407,6 +452,7 @@ async def settings_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("Закрыть", callback_data="close_settings")]
     ]
     await update.message.reply_text("⚙️ Настройки группы:", reply_markup=InlineKeyboardMarkup(keyboard))
+
 async def settings_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query; await query.answer()
     chat_id = query.message.chat_id
@@ -437,6 +483,7 @@ async def settings_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("Закрыть", callback_data="close_settings")]
     ]
     await query.edit_message_text("⚙️ Настройки группы:", reply_markup=InlineKeyboardMarkup(keyboard))
+
 async def nsfw_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     if not is_admin(update.effective_user.id, chat_id):
@@ -452,6 +499,7 @@ async def nsfw_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("✅ Режим NSFW выключен.")
     else:
         await update.message.reply_text("Неизвестное значение. Используйте on/off.")
+
 async def mod_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     if not is_admin(update.effective_user.id, chat_id):
@@ -473,12 +521,15 @@ async def mod_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         remove_group_admin(chat_id, target_id)
         await update.message.reply_text(f"❌ Пользователь {target_id} удалён из модераторов.")
+
+# ---------- Обработка сообщений в группах ----------
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.type not in ("group", "supergroup"):
         return
     chat_id = update.effective_chat.id
     user = update.effective_user
     bot_username = context.bot.username
+
     if not global_enabled:
         return
     settings = get_group_settings(chat_id)
@@ -497,6 +548,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("Введите число.")
         context.user_data['waiting_interval'] = False
         return
+
     mentioned = False
     if update.message.text and f"@{bot_username}" in update.message.text:
         mentioned = True
@@ -504,20 +556,25 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         mentioned = True
     if not mentioned:
         return
+
     clean_text = update.message.text.replace(f"@{bot_username}", "").strip() if update.message.text else ""
     if not clean_text:
         clean_text = "Привет! Расскажи что-нибудь смешное."
+
     if chat_id not in context_data:
         context_data[chat_id] = []
     user_name = f"@{user.username}" if user.username else user.first_name
     context_data[chat_id].append({"role":"user","content":f"{user_name}: {clean_text}"})
     if len(context_data[chat_id]) > 6:
         context_data[chat_id] = context_data[chat_id][-6:]
+
     answer = await ask_ai(clean_text, chat_id=chat_id, context=context_data[chat_id])
     if user.id == founder_id:
         answer = f"Создатель, {answer}"
     context_data[chat_id].append({"role":"assistant","content":answer})
     await update.message.reply_text(answer)
+
+# ---------- Случайные отправки ----------
 async def random_sender(app: Application):
     while True:
         await asyncio.sleep(60)
@@ -555,9 +612,12 @@ async def random_sender(app: Application):
                 last_random_time[chat_id] = now
         except Exception as e:
             logging.error(f"Random sender error: {e}")
+
+# ---------- Управление ботом ----------
 is_running = False
 application = None
 polling_task = None
+
 async def start_group_ai():
     global is_running, application, polling_task, group_admins, founder_id
     if is_running: return
@@ -566,14 +626,19 @@ async def start_group_ai():
     init_db()
     load_global_settings()
     group_admins = load_admins()
+    # Устанавливаем founder_id, если он уже сохранён в БД
     conn = get_db(); c = conn.cursor()
-    c.execute("SELECT user_id FROM admins WHERE username=?", (FOUNDER_USERNAME.lower(),))
+    c.execute("SELECT user_id FROM admins WHERE user_id=?", (FOUNDER_ID,))
     row = c.fetchone()
-    if row and row[0] != -1:
+    if row:
         founder_id = row[0]
+    else:
+        # Если основатель ещё не заходил, founder_id = FOUNDER_ID (он будет установлен при первом /start)
+        founder_id = FOUNDER_ID
     conn.close()
+
     app = Application.builder().token(BOT_TOKEN).build()
-    app.add_handler(MessageHandler(filters.TEXT & filters.ChatType.PRIVATE & filters.User(username=FOUNDER_USERNAME), founder_message))
+    app.add_handler(MessageHandler(filters.TEXT & filters.ChatType.PRIVATE & filters.User(user_id=FOUNDER_ID), founder_message))
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("meme", meme_cmd))
     app.add_handler(CommandHandler("joke", joke_cmd))
@@ -596,6 +661,7 @@ async def start_group_ai():
     polling_task = asyncio.create_task(app.updater.start_polling())
     application = app
     is_running = True
+
 async def stop_group_ai():
     global is_running, application, polling_task
     if not is_running: return
