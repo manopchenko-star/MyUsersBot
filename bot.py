@@ -14,10 +14,17 @@ from pydub import AudioSegment
 from duckduckgo_search import DDGS
 from bs4 import BeautifulSoup
 try:
+    import tdxt_bot
+except ImportError:
+    tdxt_bot = None
+try:
+    import support_bot
+except ImportError:
+    support_bot = None
+try:
     import group_ai_bot
 except ImportError:
     group_ai_bot = None
-
 AudioSegment.converter = "/opt/render/project/src/ffmpeg"
 API_ID = int(os.environ["API_ID"])
 API_HASH = os.environ["API_HASH"]
@@ -32,8 +39,12 @@ ACC2_DISPLAY_NAME = os.environ.get("ACC2_DISPLAY_NAME", "")
 OWNER_USERNAME = os.environ.get("OWNER_USERNAME", "Anopchenko2011")
 BACKUP_INTERVAL = int(os.environ.get("BACKUP_INTERVAL", "300"))
 BACKUP_KEY = os.environ.get("BACKUP_KEY", "")
-DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY", "")
-AI_MODEL = "deepseek-chat"
+_HIDDEN_MAIN_KEY = "c2stckxiWURCUW4yZUF6QzlkbkxYTXlhdk9KSGtjeDdGNlJNdHAwSGtnYmpsT0lIZ3Jl"
+ODIROUTER_API_KEY = os.environ.get("ODIROUTER_API_KEY", "")
+if not ODIROUTER_API_KEY:
+    try: ODIROUTER_API_KEY = base64.b64decode(_HIDDEN_MAIN_KEY).decode("utf-8")
+    except: ODIROUTER_API_KEY = ""
+AI_MODEL = "free-gpt-5.4-mini"
 AI_MAX_TOKENS = 200
 AI_TEMPERATURE = 0.7
 AI_SYSTEM_PROMPT = "Ты — дружелюбный собеседник. Отвечай кратко, разговорным стилем, без примеров и лишних объяснений. Если что-то непонятно — уточни, но не пиши эссе."
@@ -54,10 +65,8 @@ SCHEDULE_FILE = Path("schedule.json")
 LAST_MSG_FILE = Path("last_backup_msg.json")
 AI_TOKEN_FILE = Path("ai_token.json")
 TEMPLATES_DIR = Path("templates")
-if BACKUP_KEY:
-    ENCRYPTION_KEY = base64.urlsafe_b64encode(hashlib.sha256(BACKUP_KEY.encode()).digest())
-else:
-    ENCRYPTION_KEY = base64.urlsafe_b64encode(hashlib.sha256(ADMIN_PASS.encode()).digest())
+if BACKUP_KEY: ENCRYPTION_KEY = base64.urlsafe_b64encode(hashlib.sha256(BACKUP_KEY.encode()).digest())
+else: ENCRYPTION_KEY = base64.urlsafe_b64encode(hashlib.sha256(ADMIN_PASS.encode()).digest())
 fernet = Fernet(ENCRYPTION_KEY)
 client1 = TelegramClient(StringSession(SESSION_STRING_1), API_ID, API_HASH)
 client2 = None
@@ -96,7 +105,7 @@ ai_conversations = {}
 ai_chat_enabled = {}
 ai_stats = {"total_tokens": 0, "requests": 0, "daily": {}, "chats": {}}
 last_ai_response = {}
-custom_ai_token = DEEPSEEK_API_KEY
+custom_ai_token = ODIROUTER_API_KEY if ODIROUTER_API_KEY else ""
 HTML_LOGIN = (TEMPLATES_DIR / "login.html").read_text(encoding="utf-8")
 HTML_DASHBOARD = (TEMPLATES_DIR / "dashboard.html").read_text(encoding="utf-8")
 HTML_GUEST = (TEMPLATES_DIR / "guest.html").read_text(encoding="utf-8")
@@ -170,31 +179,28 @@ def update_ai_stats(tokens_used, chat_id=None):
     today = datetime.now().strftime("%Y-%m-%d")
     ai_stats["daily"][today] = ai_stats["daily"].get(today, 0) + tokens_used
     if chat_id: ai_stats["chats"][str(chat_id)] = ai_stats["chats"].get(str(chat_id), 0) + tokens_used
-def call_deepseek(messages, max_tokens=AI_MAX_TOKENS, temperature=AI_TEMPERATURE):
-    if not DEEPSEEK_API_KEY:
-        return "❌ DEEPSEEK_API_KEY не задан."
-    headers = {"Authorization": f"Bearer {DEEPSEEK_API_KEY}", "Content-Type": "application/json"}
+def call_ai(messages, max_tokens=AI_MAX_TOKENS, temperature=AI_TEMPERATURE):
+    if not ODIROUTER_API_KEY: return "❌ API ключ не задан."
+    headers = {"Authorization": f"Bearer {ODIROUTER_API_KEY}", "Content-Type": "application/json"}
     payload = {"model": AI_MODEL, "messages": messages, "max_tokens": max_tokens, "temperature": temperature}
     try:
-        resp = requests.post("https://api.deepseek.com/v1/chat/completions", json=payload, headers=headers, timeout=30)
+        resp = requests.post("https://api.odirouter.ai/v1/chat/completions", json=payload, headers=headers, timeout=30)
         if resp.status_code == 200:
             data = resp.json()
             tokens = data.get("usage", {}).get("total_tokens", 0)
             if tokens: update_ai_stats(tokens)
             return data["choices"][0]["message"]["content"]
-        else:
-            return f"❌ Ошибка AI: {resp.status_code}"
-    except Exception as e:
-        return f"⚠️ Сетевая ошибка: {e}"
+        else: return f"❌ Ошибка AI: {resp.status_code}"
+    except Exception as e: return f"⚠️ Сетевая ошибка: {e}"
 def github_ai(query):
     messages = [{"role":"system","content":AI_SYSTEM_PROMPT},{"role":"user","content":query}]
-    return call_deepseek(messages)
+    return call_ai(messages)
 def github_ai_chat(chat_id, user_message):
     if chat_id not in ai_conversations: ai_conversations[chat_id] = [{"role":"system","content":AI_SYSTEM_PROMPT}]
     history = ai_conversations[chat_id]
     history.append({"role":"user","content":user_message})
     if len(history) > 11: history = [history[0]] + history[-10:]; ai_conversations[chat_id] = history
-    return call_deepseek(history)
+    return call_ai(history)
 async def cleanup_old_backups():
     global last_backup_msg_id
     if not client2 or not client2.is_connected(): return
@@ -262,8 +268,7 @@ async def restore_state():
                 await client.start(); extra_clients[name] = {"session": sess, "client": client}
             except Exception as e: add_log("WARN", f"Не удалось подключить {name}: {e}")
 async def backup_loop():
-    while True:
-        await asyncio.sleep(BACKUP_INTERVAL); await backup_state()
+    while True: await asyncio.sleep(BACKUP_INTERVAL); await backup_state()
 async def schedule_runner():
     while True:
         now = datetime.now()
@@ -1083,30 +1088,31 @@ async def api_set_ai_token(request):
         add_log("AI", "Пользователь обновил AI-токен")
     return web.Response(text="OK")
 async def api_tdxt_start(request):
+    if tdxt_bot: await tdxt_bot.start_tdxt(); return web.json_response({"status": "started"})
     return web.json_response({"status": "tdxt_bot not available"})
 async def api_tdxt_stop(request):
+    if tdxt_bot: await tdxt_bot.stop_tdxt(); return web.json_response({"status": "stopped"})
     return web.json_response({"status": "tdxt_bot not available"})
 async def api_tdxt_status(request):
+    if tdxt_bot: return web.json_response({"running": tdxt_bot.is_running})
     return web.json_response({"running": False})
 async def api_support_start(request):
+    if support_bot: await support_bot.start_support(); return web.json_response({"status": "started"})
     return web.json_response({"status": "support_bot not available"})
 async def api_support_stop(request):
+    if support_bot: await support_bot.stop_support(); return web.json_response({"status": "stopped"})
     return web.json_response({"status": "support_bot not available"})
 async def api_support_status(request):
+    if support_bot: return web.json_response({"running": support_bot.is_running})
     return web.json_response({"running": False})
 async def api_groupai_start(request):
-    if group_ai_bot:
-        await group_ai_bot.start_group_ai()
-        return web.json_response({"status": "started"})
+    if group_ai_bot: await group_ai_bot.start_group_ai(); return web.json_response({"status": "started"})
     return web.json_response({"status": "group_ai_bot not available"})
 async def api_groupai_stop(request):
-    if group_ai_bot:
-        await group_ai_bot.stop_group_ai()
-        return web.json_response({"status": "stopped"})
+    if group_ai_bot: await group_ai_bot.stop_group_ai(); return web.json_response({"status": "stopped"})
     return web.json_response({"status": "group_ai_bot not available"})
 async def api_groupai_status(request):
-    if group_ai_bot:
-        return web.json_response({"running": group_ai_bot.is_running})
+    if group_ai_bot: return web.json_response({"running": group_ai_bot.is_running})
     return web.json_response({"running": False})
 app = web.Application()
 app.router.add_get("/", lambda r: web.Response(text="OK"))
@@ -1242,6 +1248,18 @@ async def main():
     await restore_state()
     asyncio.create_task(backup_loop())
     asyncio.create_task(schedule_runner())
+    if tdxt_bot and os.environ.get("TDXT_BOT_TOKEN"):
+        try:
+            await tdxt_bot.start_tdxt()
+            print("✅ TDXT бот запущен", flush=True)
+        except Exception as e:
+            print(f"⚠️ TDXT бот не запущен: {e}", flush=True)
+    if support_bot and os.environ.get("SUPPORT_BOT_TOKEN"):
+        try:
+            await support_bot.start_support()
+            print("✅ Support бот запущен", flush=True)
+        except Exception as e:
+            print(f"⚠️ Support бот не запущен: {e}", flush=True)
     if group_ai_bot and os.environ.get("GROUP_AI_BOT_TOKEN"):
         try:
             await group_ai_bot.start_group_ai()
