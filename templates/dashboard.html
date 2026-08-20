@@ -49,6 +49,9 @@
     .dialog-item { padding: 0.5rem; cursor: pointer; border-bottom: 1px solid #30363d; }
     .dialog-item:hover { background: #1e1e2e; }
     .log-container { height:60vh; overflow-y:auto; background:#0a0a0a; padding:0.5rem; font-family:monospace; font-size:0.8rem; }
+    .inline-buttons { margin-top: 4px; }
+    .inline-buttons button { background: #1e1e2e; color: white; border: 1px solid #30363d; border-radius: 6px; padding: 2px 6px; cursor: pointer; }
+    .inline-buttons button:hover { background: #e94560; }
     @media (max-width: 768px) { .tabs { flex-wrap: nowrap; } }
   </style>
 </head>
@@ -81,6 +84,7 @@
     <button data-tab="aistats">🧠 AI</button>
     <button data-tab="aitoken">🔑 AI Token</button>
     <button data-tab="tdxt">🤖 TDXT Bot</button>
+    <button data-tab="groupai_admins">👥 Group AI Admins</button>
   </div>
   <div class="content">
     <div id="muted" class="tab-pane active">
@@ -124,6 +128,8 @@
         <button type="submit" class="btn-custom">Добавить</button>
       </form>
       <div id="adminsList"></div>
+      <h5>Администраторы Group AI</h5>
+      <div id="groupaiAdminsList"></div>
     </div>
     <div id="accounts" class="tab-pane">
       <form action="/add_account" method="post" style="display:flex; flex-direction:column; gap:0.5rem; max-width:500px;">
@@ -132,6 +138,13 @@
         <button type="submit" class="btn-custom">Подключить</button>
       </form>
       <div id="extraAccountsList" style="margin-top:1rem;"></div>
+      <h5>Номера телефонов</h5>
+      <table>
+        <tr><th>Аккаунт</th><th>Телефон</th></tr>
+        <tr><td>Аккаунт 1</td><td id="acc1Phone">—</td></tr>
+        <tr><td>Аккаунт 2</td><td id="acc2Phone">—</td></tr>
+      </table>
+      <div id="extraPhones"></div>
     </div>
     <div id="backup" class="tab-pane">
       <button class="btn-custom" onclick="createBackup()">Создать бэкап</button>
@@ -195,13 +208,11 @@
       </div>
       <div class="log-container" id="logContainer"></div>
     </div>
-    <!-- AI Statistics Tab -->
     <div id="aistats" class="tab-pane">
       <h4>Использование AI</h4>
       <canvas id="aiDailyChart" width="400" height="200"></canvas>
       <canvas id="aiChatsChart" width="400" height="200" style="margin-top:1rem;"></canvas>
     </div>
-    <!-- AI Token Tab -->
     <div id="aitoken" class="tab-pane">
       <div style="max-width:400px;">
         <p>Введите новый токен Mistral AI (или совместимый). После сохранения он сразу применится.</p>
@@ -210,12 +221,15 @@
         <div id="aiTokenMsg" style="margin-top:0.5rem; color:#7ee787;"></div>
       </div>
     </div>
-    <!-- TDXT Bot Tab -->
     <div id="tdxt" class="tab-pane">
       <h4>TDXT Bot Control</h4>
       <p>Status: <span id="tdxtStatus">Stopped</span></p>
       <button class="btn-custom" onclick="startTdxt()">▶ Start</button>
       <button class="btn-custom" onclick="stopTdxt()">⏹ Stop</button>
+    </div>
+    <div id="groupai_admins" class="tab-pane">
+      <h4>Администраторы Group AI</h4>
+      <div id="groupaiAdminsList"></div>
     </div>
   </div>
   <div id="notification" class="notification"></div>
@@ -223,6 +237,7 @@
     var ws, fullHistory=[], acc1Name="Аккаунт 1", acc2Name="Аккаунт 2", extraAccounts=[], backupHistory=[], afkUsers={}, notes="", filters={}, blacklist=[], schedule=[], activeAccount="1", theme="dark", activeChatId=null;
     var allLogs = [];
     var aiDailyChart, aiChatsChart;
+    var acc1Phone = "—", acc2Phone = "—", extraAccountsPhones = {};
 
     function showNotification(text, isError) {
       isError = isError || false;
@@ -244,6 +259,7 @@
       });
       checkTdxtStatus();
       setInterval(checkTdxtStatus, 5000);
+      loadGroupAiAdmins();
     });
 
     function connectWS() {
@@ -270,6 +286,10 @@
       acc1Name = data.acc1_name || 'Аккаунт 1';
       acc2Name = data.acc2_name;
       extraAccounts = data.extra_clients || [];
+      acc1Phone = data.acc1_phone || "—";
+      acc2Phone = data.acc2_phone || "—";
+      extraAccountsPhones = data.extra_clients_phones || {};
+
       var sel = document.getElementById('accountSelect');
       sel.innerHTML = ''; sel.add(new Option(acc1Name, '1'));
       if (acc2Name) sel.add(new Option(acc2Name, '2'));
@@ -321,6 +341,7 @@
       renderFilters();
       renderSchedule();
       updateStatsChart();
+      loadGroupAiAdmins();
     }
 
     function updateAiCharts(stats) {
@@ -396,6 +417,13 @@
         html += '<div class="list-group-item">' + name + ' <a href="/remove_account?name=' + name + '" class="btn-custom">Отключить</a></div>';
       });
       document.getElementById('extraAccountsList').innerHTML = html || 'Нет';
+      document.getElementById('acc1Phone').textContent = acc1Phone;
+      document.getElementById('acc2Phone').textContent = acc2Phone;
+      let phonesHtml = '';
+      for (let name in extraAccountsPhones) {
+        phonesHtml += `<div>${name}: ${extraAccountsPhones[name]}</div>`;
+      }
+      document.getElementById('extraPhones').innerHTML = phonesHtml;
     }
 
     function renderAfk() {
@@ -573,7 +601,15 @@
       var html = '';
       messages.reverse().forEach(function(msg) {
         var cls = msg.out ? 'out' : 'in';
-        html += '<div class="message ' + cls + '"><div class="message-text">' + (msg.text || '') + '</div><div style="font-size:0.7rem;">' + msg.date.substr(11,8) + ' ' + (msg.sender||'') + ' <button class="btn-custom" onclick="deleteMessage(' + msg.id + ')" style="font-size:0.6rem;padding:0.1rem 0.3rem;">Удалить</button></div></div>';
+        var buttonsHtml = '';
+        if (msg.buttons && msg.buttons.length > 0) {
+          buttonsHtml = '<div class="inline-buttons">';
+          msg.buttons.forEach(btn => {
+            buttonsHtml += `<button class="btn-custom" style="margin:2px; font-size:0.7rem;" onclick="pressButton(${msg.id}, '${encodeURIComponent(btn.callback_data)}')">${btn.text}</button>`;
+          });
+          buttonsHtml += '</div>';
+        }
+        html += '<div class="message ' + cls + '"><div class="message-text">' + (msg.text || '') + '</div>' + buttonsHtml + '<div style="font-size:0.7rem;">' + msg.date.substr(11,8) + ' ' + (msg.sender||'') + ' <button class="btn-custom" onclick="deleteMessage(' + msg.id + ')" style="font-size:0.6rem;padding:0.1rem 0.3rem;">Удалить</button></div></div>';
       });
       document.getElementById('messagesList').innerHTML = html;
       var msgList = document.getElementById('messagesList');
@@ -602,6 +638,24 @@
         body: new URLSearchParams({account: account, chat_id: activeChatId, msg_id: msgId})
       });
       openChat(activeChatId, '');
+    }
+
+    async function pressButton(msgId, callbackData) {
+      if (!activeChatId) return;
+      const account = document.getElementById('chatAccountSelect').value;
+      const form = new URLSearchParams({
+        account: account,
+        chat_id: activeChatId,
+        msg_id: msgId,
+        callback_data: decodeURIComponent(callbackData)
+      });
+      const resp = await fetch('/api/press_button', { method: 'POST', body: form });
+      const data = await resp.json();
+      if (data.ok) {
+        openChat(activeChatId, '');
+      } else {
+        alert('Ошибка: ' + (data.error || 'unknown'));
+      }
     }
 
     function filterLogs() {
@@ -646,6 +700,19 @@
       } catch(e) {}
     }
 
+    async function loadGroupAiAdmins() {
+      try {
+        const resp = await fetch('/api/groupai/admins');
+        const admins = await resp.json();
+        let html = '<table><tr><th>ID</th><th>Username</th></tr>';
+        admins.forEach(a => { html += `<tr><td>${a.user_id}</td><td>${a.username}</td></tr>`; });
+        html += '</table>';
+        document.getElementById('groupaiAdminsList').innerHTML = html;
+      } catch(e) {
+        document.getElementById('groupaiAdminsList').innerHTML = 'Ошибка загрузки';
+      }
+    }
+
     document.querySelectorAll('.tabs button').forEach(function(btn) {
       btn.addEventListener('click', function() {
         document.querySelectorAll('.tabs button').forEach(function(b) { b.classList.remove('active'); });
@@ -655,6 +722,7 @@
         if (this.dataset.tab === 'stats') updateStatsChart();
         if (this.dataset.tab === 'chats') loadChats();
         if (this.dataset.tab === 'logs') filterLogs();
+        if (this.dataset.tab === 'groupai_admins') loadGroupAiAdmins();
       });
     });
   </script>
